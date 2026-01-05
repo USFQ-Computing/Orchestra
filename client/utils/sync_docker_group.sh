@@ -51,9 +51,10 @@ if ! getent group docker > /dev/null 2>&1; then
   echo "✅ Docker group created" >&2
 fi
 
-# Get docker group GID
+# Get docker group GID (auto-detect)
 DOCKER_GID=$(getent group docker | cut -d: -f3)
-echo "📦 Docker group GID: $DOCKER_GID" >&2
+echo "📦 Docker group GID detected: $DOCKER_GID" >&2
+echo "   Users will use this as their primary group" >&2
 echo "" >&2
 
 # Get list of active users from database
@@ -64,7 +65,7 @@ USERS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -U "${NSS_DB_USER}" \
   -d "${DB_NAME}" \
   -t -A -c \
-  "SELECT username, system_uid, system_gid FROM users WHERE is_active = 1 ORDER BY system_uid" 2>&1)
+  "SELECT username, system_uid FROM users WHERE is_active = 1 ORDER BY system_uid" 2>&1)
 
 if [ $? -ne 0 ]; then
   echo "❌ Error: Failed to query database for users" >&2
@@ -92,12 +93,12 @@ USERS_SKIPPED=0
 ERRORS=0
 
 # Process each user
-while IFS='|' read -r username uid gid; do
+while IFS='|' read -r username uid; do
   # Skip empty lines
   [ -z "$username" ] && continue
 
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
-  echo "👤 Processing: $username (UID: $uid, GID: $gid)" >&2
+  echo "👤 Processing: $username (UID: $uid, GID: $DOCKER_GID)" >&2
 
   # Security check: Ensure user is NOT in privileged groups
   REMOVED_PRIVS=0
@@ -121,19 +122,11 @@ while IFS='|' read -r username uid gid; do
         chmod 755 "$HOME_DIR"
       fi
 
-      # Check if GID exists, create group if not
-      if ! getent group "$gid" > /dev/null 2>&1; then
-        groupadd -g "$gid" "$username" 2>/dev/null || {
-          echo "  ⚠️  Could not create group with GID $gid" >&2
-        }
-      fi
-
-      # Create user with specific UID and GID (rbash for restricted shell)
-      # --no-user-group prevents creating a group with same name
-      # This helps prevent sudo access
-      useradd -u "$uid" -g "$gid" -d "$HOME_DIR" -s /bin/bash -M --no-user-group "$username" 2>/dev/null || {
-        # If user creation fails, try without specifying UID/GID
-        useradd -d "$HOME_DIR" -s /bin/bash -M --no-user-group "$username" 2>/dev/null || {
+      # Create user with docker GID as primary group (auto-detected)
+      # This gives them docker access without needing usermod -aG docker
+      useradd -u "$uid" -g "$DOCKER_GID" -d "$HOME_DIR" -s /bin/bash -M "$username" 2>/dev/null || {
+        # If user creation fails, try without specifying UID
+        useradd -g "$DOCKER_GID" -d "$HOME_DIR" -s /bin/bash -M "$username" 2>/dev/null || {
           echo "  ❌ Failed to create user $username" >&2
           ERRORS=$((ERRORS + 1))
           continue
@@ -163,6 +156,15 @@ while IFS='|' read -r username uid gid; do
   else
     echo "  ℹ️  System user already exists" >&2
 
+    # Update GID to docker group if it's different
+    CURRENT_GID=$(id -g "$username")
+    if [ "$CURRENT_GID" -ne "$DOCKER_GID" ]; then
+      echo "  🔄 Updating GID from $CURRENT_GID to $DOCKER_GID (docker)..." >&2
+      usermod -g "$DOCKER_GID" "$username" 2>/dev/null || {
+        echo "  ⚠️  Could not update GID" >&2
+      }
+    fi
+
     # SECURITY: For existing users, verify they are NOT in privileged groups
     if groups "$username" 2>/dev/null | grep -q "\bsudo\b"; then
       echo "  ⚠️  Found in sudo group, removing..." >&2
@@ -181,20 +183,28 @@ while IFS='|' read -r username uid gid; do
     fi
   fi
 
-  # Check if user is already in docker group
-  if groups "$username" 2>/dev/null | grep -q "\bdocker\b"; then
-    echo "  ✅ Already in docker group" >&2
+  # Verify docker group membership
+  # Since docker is the primary group, they should already have access
+  # But we verify just in case
+  CURRENT_GID=$(id -g "$username")
+  if [ "$CURRENT_GID" -eq "$DOCKER_GID" ]; then
+    echo "  ✅ Primary group is docker (GID: $DOCKER_GID)" >&2
     USERS_ALREADY_IN_GROUP=$((USERS_ALREADY_IN_GROUP + 1))
   else
-    # Add user to docker group
-    echo "  🔧 Adding to docker group..." >&2
-    usermod -aG docker "$username" 2>/dev/null || {
-      echo "  ❌ Failed to add $username to docker group" >&2
-      ERRORS=$((ERRORS + 1))
-      continue
-    }
-    USERS_ADDED=$((USERS_ADDED + 1))
-    echo "  ✅ Added to docker group" >&2
+    # If for some reason they don't have docker as primary, add as secondary
+    if ! groups "$username" 2>/dev/null | grep -q "\bdocker\b"; then
+      echo "  🔧 Adding to docker group (secondary)..." >&2
+      usermod -aG docker "$username" 2>/dev/null || {
+        echo "  ❌ Failed to add $username to docker group" >&2
+        ERRORS=$((ERRORS + 1))
+        continue
+      }
+      USERS_ADDED=$((USERS_ADDED + 1))
+      echo "  ✅ Added to docker group" >&2
+    else
+      echo "  ✅ Already in docker group" >&2
+      USERS_ALREADY_IN_GROUP=$((USERS_ALREADY_IN_GROUP + 1))
+    fi
   fi
 
   # Final security verification
@@ -230,7 +240,8 @@ if [ $USERS_CREATED -gt 0 ] || [ $USERS_ADDED -gt 0 ]; then
   echo "✅ Docker group synchronization completed successfully!" >&2
   echo "" >&2
   echo "📝 Important Notes:" >&2
-  echo "  • Users have docker access (can run docker commands)" >&2
+  echo "  • Docker GID auto-detected: $DOCKER_GID" >&2
+  echo "  • Users have docker as primary group (direct access)" >&2
   echo "  • Users DO NOT have sudo access (cannot run system commands as root)" >&2
   echo "  • Users need to log out/in for group changes to take effect" >&2
   echo "" >&2
