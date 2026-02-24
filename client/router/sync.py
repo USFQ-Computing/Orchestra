@@ -38,9 +38,18 @@ def ensure_tables_exist(conn):
                 system_uid INTEGER UNIQUE NOT NULL,
                 system_gid INTEGER DEFAULT NULL,
                 ssh_public_key VARCHAR,
+                password_max_age_days INTEGER DEFAULT NULL,
+                password_changed_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT username_valid_pattern CHECK (username ~ '^[a-z_][a-z0-9_-]*$')
             )
+        """)
+
+        # Añadir columnas de expiración si no existen (para bases de datos ya existentes)
+        cur.execute("""
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS password_max_age_days INTEGER DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMP WITH TIME ZONE DEFAULT NULL
         """)
 
         # Crear índices si no existen
@@ -75,6 +84,8 @@ class UserSync(BaseModel):
     system_uid: int
     system_gid: Optional[int] = None
     ssh_public_key: Optional[str] = None
+    password_max_age_days: Optional[int] = None
+    password_changed_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
 
@@ -268,6 +279,8 @@ async def sync_users(sync_data: SyncRequest):
                                 system_uid = %s,
                                 system_gid = %s,
                                 ssh_public_key = %s,
+                                password_max_age_days = %s,
+                                password_changed_at = %s,
                                 created_at = %s
                             WHERE id = %s
                         """,
@@ -281,6 +294,8 @@ async def sync_users(sync_data: SyncRequest):
                                 user.system_uid,
                                 system_gid_value,
                                 user.ssh_public_key,
+                                user.password_max_age_days,
+                                user.password_changed_at,
                                 created_at_value,
                                 user.id,
                             ),
@@ -301,8 +316,9 @@ async def sync_users(sync_data: SyncRequest):
                             """
                             INSERT INTO users
                             (id, username, email, password_hash, is_admin, is_active,
-                             must_change_password, system_uid, system_gid, ssh_public_key, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             must_change_password, system_uid, system_gid, ssh_public_key,
+                             password_max_age_days, password_changed_at, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                             (
                                 user.id,
@@ -315,6 +331,8 @@ async def sync_users(sync_data: SyncRequest):
                                 user.system_uid,
                                 system_gid_value,
                                 user.ssh_public_key,
+                                user.password_max_age_days,
+                                user.password_changed_at,
                                 created_at_value,
                             ),
                         )

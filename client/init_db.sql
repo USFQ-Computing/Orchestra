@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS users (
     system_uid INTEGER UNIQUE NOT NULL,
     system_gid INTEGER DEFAULT 2000,
     ssh_public_key VARCHAR,
+    password_max_age_days INTEGER DEFAULT NULL,
+    password_changed_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT username_valid_pattern CHECK (username ~ '^[a-z_][a-z0-9_-]*$')
 );
@@ -27,3 +29,5 @@ COMMENT ON TABLE users IS 'Usuarios sincronizados desde el servidor central';
 COMMENT ON COLUMN users.system_uid IS 'UID del sistema Linux para SSH authentication';
 COMMENT ON COLUMN users.system_gid IS 'GID del sistema Linux para SSH authentication';
 COMMENT ON COLUMN users.ssh_public_key IS 'Clave pública SSH del usuario';
+COMMENT ON COLUMN users.password_max_age_days IS 'Maximum days before password must be changed. NULL means never expires.';
+COMMENT ON COLUMN users.password_changed_at IS 'Timestamp of last password change. Used to compute shadow sp_lstchg field.';

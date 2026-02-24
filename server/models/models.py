@@ -32,6 +32,12 @@ class User(Base):
         Integer, nullable=True, default=None
     )  # GID auto-detected by client (docker group GID)
     ssh_public_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    password_max_age_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )  # NULL = never expires; any positive int = days until password expires
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )  # Timestamp of the last password change; used to compute sp_lstchg
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -54,6 +60,8 @@ class UserResponse(BaseModel):
     is_active: int
     must_change_password: bool
     system_uid: int
+    password_max_age_days: int | None = None
+    password_changed_at: datetime | None = None
     created_at: datetime | None = None
 
     class Config:

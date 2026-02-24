@@ -136,6 +136,8 @@ async def sync_users_to_all_clients(db: Session) -> dict:
             "system_uid": user.system_uid,
             "system_gid": user.system_gid,
             "ssh_public_key": user.ssh_public_key,
+            "password_max_age_days": user.password_max_age_days,
+            "password_changed_at": user.password_changed_at.isoformat() if user.password_changed_at else None,
             "created_at": user.created_at.isoformat() if user.created_at else None
         }
         for user in users

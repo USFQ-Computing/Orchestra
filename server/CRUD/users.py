@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import func
@@ -59,6 +60,11 @@ def create_user(db: Session, user: UserCreate, auto_sync: bool = True) -> User:
         is_active=user.is_active,
         ssh_public_key=user.ssh_public_key,
         system_uid=next_uid,
+        # Mark the password as already expired so the user is forced to change it
+        # on first SSH login.  sp_lstchg will be 0 (epoch) → immediately expired
+        # for any positive sp_max value.
+        must_change_password=True,
+        password_changed_at=datetime(1970, 1, 1, tzinfo=timezone.utc),
     )
     db.add(db_user)
     db.commit()
@@ -119,6 +125,7 @@ def update_user(db: Session, user_id: int, user_data: dict) -> Optional[User]:
     # Si se incluye una nueva contraseña, hashearla
     if "password" in user_data:
         user_data["password_hash"] = hash_password(user_data.pop("password"))
+        user_data["password_changed_at"] = datetime.now(timezone.utc)
         logger.debug(f"   Password will be updated")
 
     # Actualizar los campos
@@ -150,7 +157,10 @@ def update_user_password(
 
     # Use a query-based update to avoid assigning directly to the Column-typed attribute
     hashed = hash_password(new_password)
-    db.query(User).filter(User.id == user_id).update({"password_hash": hashed})
+    db.query(User).filter(User.id == user_id).update({
+        "password_hash": hashed,
+        "password_changed_at": datetime.now(timezone.utc),
+    })
     db.commit()
 
     logger.info(f"✅ Password updated successfully for user: {db_user.username}")

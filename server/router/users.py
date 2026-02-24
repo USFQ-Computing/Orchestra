@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Header
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import csv
 import io
 import re
@@ -260,12 +260,9 @@ async def bulk_upload_users(file: UploadFile = File(...), db: Session = Depends(
                         is_admin=0,
                         is_active=1
                     )
-                    new_user = create_user(db, user_data, auto_sync=False)  # No sincronizar individualmente
-
-                    # Marcar que debe cambiar contraseña en el primer login
-                    new_user.must_change_password = True
-                    db.commit()
-                    db.refresh(new_user)
+                    # create_user already sets must_change_password=True and
+                    # password_changed_at=epoch so the password is immediately expired
+                    new_user = create_user(db, user_data, auto_sync=False)
 
                     users_created.append({
                         "id": new_user.id,
@@ -274,7 +271,7 @@ async def bulk_upload_users(file: UploadFile = File(...), db: Session = Depends(
                         "original_username": original_username if original_username != username else None
                     })
                 except Exception as e:
-                    db.rollback()  # Rollback en caso de error
+                    db.rollback()
                     users_failed.append({"username": username, "reason": str(e)})
 
         else:  # TXT
@@ -316,12 +313,9 @@ async def bulk_upload_users(file: UploadFile = File(...), db: Session = Depends(
                         is_admin=0,
                         is_active=1
                     )
-                    new_user = create_user(db, user_data, auto_sync=False)  # No sincronizar individualmente
-
-                    # Marcar que debe cambiar contraseña en el primer login
-                    new_user.must_change_password = True
-                    db.commit()
-                    db.refresh(new_user)
+                    # create_user already sets must_change_password=True and
+                    # password_changed_at=epoch so the password is immediately expired
+                    new_user = create_user(db, user_data, auto_sync=False)
 
                     users_created.append({
                         "id": new_user.id,
@@ -330,9 +324,8 @@ async def bulk_upload_users(file: UploadFile = File(...), db: Session = Depends(
                         "original_username": original_username if original_username != username else None
                     })
 
-                    _trigger_user_sync(db)
                 except Exception as e:
-                    db.rollback()  # Rollback en caso de error
+                    db.rollback()
                     users_failed.append({"username": username, "reason": str(e)})
 
     except Exception as e:
@@ -385,6 +378,7 @@ def change_password_from_client(
     # Actualizar contraseña en la base de datos central
     user.password_hash = hashed_password
     user.must_change_password = False  # Ya cambió la contraseña
+    user.password_changed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)
 
