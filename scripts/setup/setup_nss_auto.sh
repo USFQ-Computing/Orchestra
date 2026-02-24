@@ -204,10 +204,10 @@ chmod +x /usr/local/bin/pgsql-pam-auth.sh
 # Crear configuración PAM
 cat > /etc/pam.d/sssd-pgsql <<'PAM_EOF'
 #%PAM-1.0
-auth    required    pam_exec.so quiet /usr/local/bin/pgsql-pam-auth.sh
-account required    pam_permit.so
-password required   pam_deny.so
-session optional    pam_mkhomedir.so skel=/etc/skel umask=0022
+auth     required    pam_exec.so quiet /usr/local/bin/pgsql-pam-auth.sh
+account  required    pam_permit.so
+password required    pam_unix.so obscure sha512
+session  optional    pam_mkhomedir.so skel=/etc/skel umask=0022
 PAM_EOF
 
 echo "   ✅ PAM configurado"
