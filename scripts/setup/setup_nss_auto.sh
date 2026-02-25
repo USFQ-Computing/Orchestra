@@ -303,16 +303,32 @@ systemctl start pgsql-users-sync.timer
 
 echo "   ✅ Timer systemd configurado y activo"
 
-# 9. Instalar script de sincronización de contraseñas
+# 9. Instalar scripts de sincronización de contraseñas
 echo "🔄 Instalando sincronización de cambios de contraseña..."
 cp client/utils/sync_password_change.sh /usr/local/bin/sync_password_change.sh
 chmod 755 /usr/local/bin/sync_password_change.sh
+cp client/utils/update_extrausers_shadow.sh /usr/local/bin/update_extrausers_shadow.sh
+chmod 755 /usr/local/bin/update_extrausers_shadow.sh
 touch /var/log/password_sync.log
 chmod 666 /var/log/password_sync.log
 
-# Agregar hook PAM para capturar cambios de contraseña
+# Wire update_extrausers_shadow.sh into common-password BEFORE pam_unix so
+# managed users' new hash is written to /var/lib/extrausers/shadow (pam_unix
+# only writes to /etc/shadow and would otherwise fail with "token manipulation
+# error").  It exits 1 for local users so pam_unix handles them normally.
+if ! grep -q "update_extrausers_shadow.sh" /etc/pam.d/common-password; then
+  # Insert before the pam_unix line so it runs first
+  sed -i '/pam_unix.so.*use_authtok/i password\tsufficient\tpam_exec.so expose_authtok quiet /usr/local/bin/update_extrausers_shadow.sh' \
+    /etc/pam.d/common-password
+  echo "   ✅ Hook PAM para escritura en extrausers shadow instalado"
+else
+  echo "   ℹ️  Hook PAM de extrausers shadow ya estaba configurado"
+fi
+
+# Agregar hook PAM para replicar el cambio al servidor central (runs after the
+# password is already written locally)
 if ! grep -q "sync_password_change.sh" /etc/pam.d/common-password; then
-  echo "password    optional    pam_exec.so quiet /usr/local/bin/sync_password_change.sh" >> /etc/pam.d/common-password
+  echo "password    optional    pam_exec.so expose_authtok quiet /usr/local/bin/sync_password_change.sh" >> /etc/pam.d/common-password
   echo "   ✅ Hook PAM para sincronización de contraseñas instalado"
 else
   echo "   ℹ️  Hook PAM ya estaba configurado"
