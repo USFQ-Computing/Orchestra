@@ -118,6 +118,11 @@ SCRIPT_EOF
 chmod +x /usr/local/bin/generate_passwd_from_db.sh
 
 # 4. Crear script para generar shadow desde PostgreSQL
+# IMPORTANT: This script must NOT write bcrypt hashes ($2b$) to the shadow file.
+# The DB stores bcrypt for web login; PAM/SSH needs SHA-512 ($6$) or yescrypt ($y$).
+# SHA-512 hashes are written by pam_extrausers.so when the user runs `passwd`.
+# This script preserves any existing PAM-compatible hash and uses '!' for new users
+# (locked until first `passwd` run, enforcing password change on first login).
 cat > /usr/local/bin/generate_shadow_from_db.sh <<'SCRIPT_EOF'
 #!/usr/bin/env bash
 source /etc/default/sssd-pgsql 2>/dev/null || exit 1
@@ -125,37 +130,56 @@ source /etc/default/sssd-pgsql 2>/dev/null || exit 1
 TEMP_FILE="/var/lib/extrausers/shadow.tmp"
 TARGET_FILE="/var/lib/extrausers/shadow"
 
-PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+mkdir -p /var/lib/extrausers
+
+DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -h "${DB_HOST}" \
   -p "${DB_PORT}" \
   -U "${NSS_DB_USER}" \
   -d "${DB_NAME}" \
-  -t -A -F: -c \
-  "SELECT 
+  -t -A -F$'\t' -c \
+  "SELECT
     username,
-    password_hash,
-    '18000',
-    '0',
-    '99999',
-    '7',
-    '',
-    '',
-    ''
+    FLOOR(EXTRACT(EPOCH FROM COALESCE(password_changed_at, created_at, NOW())) / 86400)::INTEGER,
+    COALESCE(password_max_age_days::TEXT, '99999')
    FROM users
    WHERE is_active = 1
-   ORDER BY system_uid" > "$TEMP_FILE" 2>/dev/null
+   ORDER BY system_uid" 2>/dev/null)
 
-if [ $? -eq 0 ]; then
-  # Si la query fue exitosa (aunque esté vacía), actualizar el archivo
-  mv "$TEMP_FILE" "$TARGET_FILE"
-  chmod 640 "$TARGET_FILE"
-  chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE"
-  # Si está vacío, crear archivo vacío válido
-  touch "$TARGET_FILE"
-else
-  rm -f "$TEMP_FILE"
+if [ $? -ne 0 ]; then
+  echo "Error: PostgreSQL query failed" >&2
   exit 1
 fi
+
+if [ -z "$DB_ROWS" ]; then
+  touch "$TARGET_FILE"
+  chmod 640 "$TARGET_FILE"
+  chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null
+  exit 0
+fi
+
+> "$TEMP_FILE"
+
+while IFS=$'\t' read -r USERNAME SP_LSTCHG SP_MAX; do
+  [ -z "$USERNAME" ] && continue
+  EXISTING_HASH=""
+  if [ -f "$TARGET_FILE" ]; then
+    EXISTING_HASH=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' "$TARGET_FILE")
+  fi
+  case "$EXISTING_HASH" in
+    '$6$'*|'$y$'*|'$1$'*|'$2a$'*|'$2y$'*|'$5$'*)
+      HASH="$EXISTING_HASH"
+      ;;
+    *)
+      HASH="!"
+      ;;
+  esac
+  printf '%s:%s:%s:0:%s:7:::\n' "$USERNAME" "$HASH" "$SP_LSTCHG" "$SP_MAX" >> "$TEMP_FILE"
+done <<< "$DB_ROWS"
+
+mv "$TEMP_FILE" "$TARGET_FILE"
+chmod 640 "$TARGET_FILE"
+chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null
 SCRIPT_EOF
 
 chmod +x /usr/local/bin/generate_shadow_from_db.sh
