@@ -26,6 +26,7 @@ services:
         environment:
             DATABASE_URL: ${DATABASE_URL}
             SECRET_KEY: ${SECRET_KEY}
+            CLIENT_SECRET: ${CLIENT_SECRET}
             WORKERS: ${WORKERS}
             PORT: ${PORT}
             INSTALL_DEPS: "false"
@@ -34,10 +35,8 @@ services:
         depends_on:
             db:
                 condition: service_healthy
-        # Puerto comentado - solo accesible internamente en la red Docker
-        # El frontend hace proxy a través de /api/*
-        # ports:
-        #   - "8000:8000"
+        ports:
+            - "8000:8000"
         volumes:
             - ./server:/app/server # Hot reload: montar código fuente
             - ./playbooks:/app/playbooks # Compartir directorio de playbooks

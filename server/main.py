@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .models.models import ServerCreate
 from .router.ansible import router as ansible_router
 from .router.auth import router as auth_router
+from .router.client_api import router as client_api_router
 from .router.containers import router as containers_router
 from .router.executions import router as executions_router
 from .router.servers import router as servers_router
@@ -49,6 +50,7 @@ def read_root():
 
 
 app.include_router(auth_router)
+app.include_router(client_api_router)
 app.include_router(ansible_router)
 app.include_router(executions_router)
 app.include_router(servers_router)

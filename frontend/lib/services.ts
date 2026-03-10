@@ -44,6 +44,7 @@ export interface User {
     email: string;
     is_admin: number;
     is_active: number;
+    must_change_password: boolean;
     system_uid: number;
     created_at: string;
 }
@@ -309,6 +310,11 @@ export const usersService = {
 
     async toggleAdmin(id: number) {
         const response = await api.put<User>(`/users/${id}/toggle-admin`);
+        return response.data;
+    },
+
+    async expirePassword(id: number) {
+        const response = await api.post<User>(`/users/${id}/expire-password`);
         return response.data;
     },
 

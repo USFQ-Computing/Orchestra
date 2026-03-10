@@ -21,6 +21,7 @@ from ..CRUD.users import (
     create_user,
     update_user,
     update_user_password,
+    expire_user_password,
     activate_user,
     deactivate_user,
     toggle_admin,
@@ -148,6 +149,15 @@ def change_password(user_id: int, password_data: PasswordChange, db: Session = D
     if not updated:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password update failed")
     return {"success": True, "message": "Password updated"}
+
+
+@router.post("/{user_id}/expire-password", response_model=UserResponse)
+def expire_password(user_id: int, db: Session = Depends(get_db)):
+    """Fuerza al usuario a cambiar su contraseña en el próximo login"""
+    user = expire_user_password(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
 
 
 @router.put("/{user_id}/activate", response_model=UserResponse)

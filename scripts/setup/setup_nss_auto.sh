@@ -38,12 +38,14 @@ export NSS_DB_PASSWORD="${NSS_DB_PASSWORD:-postgres}"
 # URL del servidor central para sincronización de contraseñas
 # IMPORTANTE: Cambiar esto a la URL real del servidor central
 export SERVER_URL="${SERVER_URL:-http://localhost:8000}"
+export CLIENT_SECRET="${CLIENT_SECRET:-}"
 
 echo "   DB_HOST: $DB_HOST"
 echo "   DB_PORT: $DB_PORT"
 echo "   DB_NAME: $DB_NAME"
 echo "   DB_USER: $NSS_DB_USER"
 echo "   SERVER_URL: $SERVER_URL"
+echo "   CLIENT_SECRET: $([ -n "$CLIENT_SECRET" ] && echo '(set)' || echo '(not set - endpoint will return 503)')"
 echo ""
 
 # Verificar conexión a la base de datos
@@ -60,7 +62,7 @@ echo ""
 echo "📦 [1/8] Instalando paquetes necesarios..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y libnss-extrausers postgresql-client > /dev/null 2>&1
+apt-get install -y libnss-extrausers postgresql-client libpam-script > /dev/null 2>&1
 echo "   ✅ Paquetes instalados"
 
 # 2. Crear archivo de configuración
@@ -72,8 +74,9 @@ DB_NAME=$DB_NAME
 NSS_DB_USER=$NSS_DB_USER
 NSS_DB_PASSWORD=$NSS_DB_PASSWORD
 SERVER_URL=$SERVER_URL
+CLIENT_SECRET=$CLIENT_SECRET
 EOF
-chmod 600 /etc/default/sssd-pgsql
+chmod 644 /etc/default/sssd-pgsql
 echo "   ✅ /etc/default/sssd-pgsql creado"
 
 # 3. Crear script para generar passwd desde PostgreSQL
@@ -131,10 +134,10 @@ PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -U "${NSS_DB_USER}" \
   -d "${DB_NAME}" \
   -t -A -F: -c \
-  "SELECT 
+  "SELECT
     username,
     password_hash,
-    '18000',
+    CASE WHEN must_change_password THEN '0' ELSE '18000' END,
     '0',
     '99999',
     '7',
@@ -206,7 +209,7 @@ cat > /etc/pam.d/sssd-pgsql <<'PAM_EOF'
 #%PAM-1.0
 auth    required    pam_exec.so quiet /usr/local/bin/pgsql-pam-auth.sh
 account required    pam_permit.so
-password required   pam_deny.so
+password required   pam_permit.so
 session optional    pam_mkhomedir.so skel=/etc/skel umask=0022
 PAM_EOF
 
@@ -310,13 +313,21 @@ chmod 755 /usr/local/bin/sync_password_change.sh
 touch /var/log/password_sync.log
 chmod 666 /var/log/password_sync.log
 
-# Agregar hook PAM para capturar cambios de contraseña
-if ! grep -q "sync_password_change.sh" /etc/pam.d/common-password; then
-  echo "password    optional    pam_exec.so quiet /usr/local/bin/sync_password_change.sh" >> /etc/pam.d/common-password
-  echo "   ✅ Hook PAM para sincronización de contraseñas instalado"
-else
-  echo "   ℹ️  Hook PAM ya estaba configurado"
-fi
+# pam_script busca el script de cambio de contraseña en /etc/pam-script.d/pam_script_passwd
+mkdir -p /etc/pam-script.d
+ln -sf /usr/local/bin/sync_password_change.sh /etc/pam-script.d/pam_script_passwd
+chmod 755 /etc/pam-script.d/pam_script_passwd 2>/dev/null || true
+
+# Agregar hook PAM para capturar cambios de contraseña.
+# pam_script.so pasa PAM_AUTHTOK como variable de entorno al script
+# (a diferencia de pam_exec.so expose_authtok que no funciona para chauthtok en libpam 1.5.3).
+PAM_EXEC_LINE="password    sufficient    pam_script.so dir=/etc/pam-script.d"
+
+# Eliminar cualquier entrada previa (puede estar en posición incorrecta)
+sed -i '/pam_exec\.so.*sync_password_change\.sh\|pam_script\.so/d' /etc/pam.d/common-password
+# Insertar antes de la primera línea que contenga pam_unix.so
+sed -i "/pam_unix\.so/i ${PAM_EXEC_LINE}" /etc/pam.d/common-password
+echo "   ✅ Hook PAM para sincronización de contraseñas instalado"
 
 # 10. Configurar SSH para usar PAM
 echo "🔐 [8/8] Configurando SSH..."

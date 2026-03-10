@@ -1,0 +1,54 @@
+---
+- name: Deploy application with Docker Compose
+  hosts: localhost
+  become: yes
+  vars:
+    app_directory: "/home/staffteam/pp"
+
+  tasks:
+    - name: Pull latest changes from git
+      ansible.builtin.shell:
+        cmd: git pull
+        chdir: "{{ app_directory }}"
+      register: git_pull_result
+
+    - name: Display git pull result
+      ansible.builtin.debug:
+        msg: "Git pull output: {{ git_pull_result.stdout }}"
+
+    - name: Stop Docker Compose client service
+      ansible.builtin.command:
+        cmd: docker compose down client
+        chdir: "{{ app_directory }}"
+      register: docker_down_result
+      ignore_errors: yes
+
+    - name: Display docker compose down result
+      ansible.builtin.debug:
+        msg: "Docker compose down executed"
+
+    - name: Build and start Docker Compose client service
+      ansible.builtin.command:
+        cmd: docker compose up --build -d client
+        chdir: "{{ app_directory }}"
+      register: docker_up_result
+
+    - name: Display docker compose up result
+      ansible.builtin.debug:
+        msg: "Docker compose up completed"
+
+    - name: Execute setup script
+      ansible.builtin.shell:
+        cmd: ./scripts/setup/setup_nss_auto.sh
+        chdir: "{{ app_directory }}"
+      register: setup_result
+
+    - name: Display setup script result
+      ansible.builtin.debug:
+        msg: "Setup script executed successfully"
+        verbosity: 0
+
+    - name: Show setup script output
+      ansible.builtin.debug:
+        var: setup_result.stdout_lines
+      when: setup_result.stdout_lines is defined

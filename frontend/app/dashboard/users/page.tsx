@@ -201,6 +201,18 @@ export default function UsersPage() {
         }
     };
 
+    const handleExpirePassword = async (user: User) => {
+        try {
+            const updatedUser = await usersService.expirePassword(user.id);
+            setUsers(users.map((u) => (u.id === user.id ? updatedUser : u)));
+        } catch (error: any) {
+            console.error("Error expiring password:", error);
+            setError(
+                error.response?.data?.detail || "Error al expirar contraseña",
+            );
+        }
+    };
+
     const handleBulkUpload = async () => {
         if (!bulkFile) {
             setError("Selecciona un archivo");
@@ -451,6 +463,20 @@ export default function UsersPage() {
                                                         className="text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-300 font-medium"
                                                     >
                                                         Editar
+                                                    </button>
+                                                    <button
+                                                        onClick={() =>
+                                                            handleExpirePassword(user)
+                                                        }
+                                                        disabled={user.must_change_password}
+                                                        title={user.must_change_password ? "Ya tiene cambio de contraseña pendiente" : "Forzar cambio de contraseña en próximo login"}
+                                                        className={`font-medium ${
+                                                            user.must_change_password
+                                                                ? "text-amber-400 dark:text-amber-500 cursor-default"
+                                                                : "text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300"
+                                                        }`}
+                                                    >
+                                                        {user.must_change_password ? "Pwd Expirada" : "Expirar Pwd"}
                                                     </button>
                                                     <button
                                                         onClick={() =>

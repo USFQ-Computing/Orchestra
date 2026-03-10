@@ -148,17 +148,33 @@ def update_user_password(
 
     logger.info(f"🔐 Updating password for user: {db_user.username} (id={user_id})")
 
-    # Use a query-based update to avoid assigning directly to the Column-typed attribute
     hashed = hash_password(new_password)
-    db.query(User).filter(User.id == user_id).update({"password_hash": hashed})
+    db.query(User).filter(User.id == user_id).update({"password_hash": hashed, "must_change_password": False})
     db.commit()
 
     logger.info(f"✅ Password updated successfully for user: {db_user.username}")
 
-    # Sincronizar con todos los clientes
     _trigger_user_sync(db)
 
-    # Return a fresh instance from the DB
+    return get_user_by_id(db, user_id)
+
+
+def expire_user_password(db: Session, user_id: int) -> Optional[User]:
+    """Marca must_change_password=True para forzar cambio en próximo login"""
+    db_user = get_user_by_id(db, user_id)
+    if not db_user:
+        logger.warning(f"⚠️  Cannot expire password for user {user_id}: User not found")
+        return None
+
+    logger.info(f"🔑 Expiring password for user: {db_user.username} (id={user_id})")
+
+    db.query(User).filter(User.id == user_id).update({"must_change_password": True})
+    db.commit()
+
+    logger.info(f"✅ Password expired for user: {db_user.username}")
+
+    _trigger_user_sync(db)
+
     return get_user_by_id(db, user_id)
 
 
