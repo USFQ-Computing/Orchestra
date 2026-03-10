@@ -60,7 +60,27 @@ if [ "$IS_DB_USER" != "1" ]; then
   exit 1
 fi
 
-log "Password change detected for user: $USERNAME from host: $CLIENT_HOSTNAME"
+# ── Check if user is a managed system user ────────────────────────────────────
+# Query the local PostgreSQL DB (populated by the central server sync).
+# If psql is not available or the query fails, fall through and skip sync safely.
+IS_MANAGED=0
+if command -v psql >/dev/null 2>&1; then
+  MANAGED_CHECK=$(PGPASSWORD="$DB_PASS" psql \
+    -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+    -tAc "SELECT 1 FROM users WHERE username = '$USERNAME' AND is_active = 1 LIMIT 1;" \
+    2>/dev/null)
+  if [ "$MANAGED_CHECK" = "1" ]; then
+    IS_MANAGED=1
+  fi
+fi
+
+if [ "$IS_MANAGED" -eq 0 ]; then
+  log "INFO: User '$USERNAME' is a local-only user — password changed locally, no sync needed"
+  exit 0
+fi
+
+# ── Managed user: propagate to central server ─────────────────────────────────
+log "Password change detected for managed user: $USERNAME from host: $CLIENT_HOSTNAME"
 
 # Enviar al servidor central
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${SERVER_URL}/client-api/users/${USERNAME}/change-password" \

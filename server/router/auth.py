@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
 from ..CRUD.users import create_user
 from ..models.models import (
@@ -172,6 +173,7 @@ def change_password(
     # Actualizar contraseña
     user.password_hash = hash_password(payload.new_password)
     user.must_change_password = False  # Desmarcar flag de cambio obligatorio
+    user.password_changed_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(user)
