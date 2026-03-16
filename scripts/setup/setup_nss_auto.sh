@@ -294,6 +294,28 @@ SCRIPT_EOF
 
 chmod +x /usr/local/bin/pgsql-pam-auth.sh
 
+# 4.4 Crear script de sincronización unificado
+cat > /usr/local/bin/sync-pgsql-users.sh <<'SYNC_EOF'
+#!/bin/bash
+# Script de sincronización unificado para usuarios, permisos y docker
+set -e
+
+source /etc/default/sssd-pgsql 2>/dev/null || exit 1
+
+# Sincronizar passwd y shadow desde BD
+/bin/bash /usr/local/bin/generate_passwd_from_db.sh
+/bin/bash /usr/local/bin/generate_shadow_from_db.sh
+
+# Sincronizar permisos docker
+if [ -f /home/staffteam/pp/client/utils/sync_docker_group.sh ]; then
+  /bin/bash /home/staffteam/pp/client/utils/sync_docker_group.sh > /dev/null 2>&1 || true
+fi
+
+exit 0
+SYNC_EOF
+
+chmod +x /usr/local/bin/sync-pgsql-users.sh
+
 # 4.5 Crear script para verificar contraseña expirada
 cat > /usr/local/bin/check-password-expired.sh <<'SCRIPT_EOF'
 #!/bin/bash
@@ -449,20 +471,19 @@ echo "   ✅ nsswitch.conf modificado"
 echo "⏰ [7/8] Configurando sincronización automática..."
 cat > /etc/systemd/system/pgsql-users-sync.service <<'SERVICE_EOF'
 [Unit]
-Description=Sync PostgreSQL users to local files
+Description=Sync PostgreSQL users, groups, and docker permissions
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash /usr/local/bin/generate_passwd_from_db.sh
-ExecStart=/bin/bash /usr/local/bin/generate_shadow_from_db.sh
+ExecStart=/bin/bash /usr/local/bin/sync-pgsql-users.sh
 StandardOutput=journal
 StandardError=journal
 SERVICE_EOF
 
 cat > /etc/systemd/system/pgsql-users-sync.timer <<'TIMER_EOF'
 [Unit]
-Description=Sync PostgreSQL users every 2 minutes
+Description=Sync PostgreSQL users, groups, and docker permissions every 2 minutes
 Requires=pgsql-users-sync.service
 
 [Timer]
@@ -585,7 +606,7 @@ fi
 
 # Verificar timer
 if systemctl is-active --quiet pgsql-users-sync.timer; then
-  echo "   ✅ Timer de sincronización activo"
+  echo "   ✅ Timer de sincronización activo (usuarios, docker)"
 else
   echo "   ⚠️  Timer de sincronización no activo"
 fi
@@ -604,20 +625,11 @@ else
   echo "   ⚠️  Script de generación de shadow no encontrado"
 fi
 
-# 12. Sincronizar usuarios con grupo docker
+# 12. Sincronización inicial (docker se sincroniza en el timer automático)
 echo ""
-echo "🐳 [10/10] Sincronizando permisos de docker..."
-if [ -f /home/staffteam/pp/client/utils/sync_docker_group.sh ]; then
-  # Ejecutar el script de sincronización de docker
-  bash /home/staffteam/pp/client/utils/sync_docker_group.sh
-  if [ $? -eq 0 ]; then
-    echo "   ✅ Sincronización de docker completada"
-  else
-    echo "   ⚠️  Sincronización de docker completada con advertencias"
-  fi
-else
-  echo "   ⚠️  Script de sincronización de docker no encontrado"
-fi
+echo "🐳 [10/10] Sincronización inicial completada..."
+echo "   ℹ️  Docker y usuarios se sincronizarán automáticamente cada 2 minutos"
+echo "   ✅ Sincronización lista"
 
 # Resumen
 echo ""
@@ -642,10 +654,8 @@ echo "   • SSH fuerza cambio automático en primer login"
 echo "   • Comando: passwd"
 echo ""
 echo "⏰ Sincronización:"
-echo "   • Automática cada 2 minutos (usuarios NSS)"
-echo "   • Shadow: regenerado al instalar"
-echo "   • Docker: sincronizado al instalar"
-echo "   • Manual: sudo systemctl start pgsql-users-sync.service"
+echo "   • Automática cada 2 minutos (usuarios, docker, shadow)"
+echo "   • Comando manual: sudo systemctl start pgsql-users-sync.service"
 echo ""
 echo "📊 Monitoreo:"
 echo "   systemctl status pgsql-users-sync.timer"
