@@ -321,53 +321,172 @@ cat > /usr/local/bin/check-password-expired.sh <<'SCRIPT_EOF'
 #!/bin/bash
 # Verifica si la contraseña del usuario está expirada (password_changed_at = 1970-01-01)
 # Se ejecuta en la fase de account de PAM
-# Retorna 0 si pueden entrar, 1 si están expirados
+# PERMITE LOGIN pero marca el usuario para forzar cambio en /etc/profile.d
 
-username="${PAM_USER:-}"
-[ -z "$username" ] && exit 0  # No hay usuario
+{
+  echo "$(date): check-password-expired.sh ejecutándose"
 
-# Cargar configuración de BD
-source /etc/default/sssd-pgsql 2>/dev/null || exit 0
+  username="${PAM_USER:-}"
+  echo "  username=$username"
+  [ -z "$username" ] && { echo "  No username, exiting"; exit 0; }
 
-# Verificar si es usuario de BD
-is_db_user=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
-  -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
-  -t -A -c "SELECT 1 FROM users WHERE username = '${username}' AND is_active = 1" \
-  < /dev/null 2>/dev/null)
+  # Cargar configuración de BD
+  source /etc/default/sssd-pgsql 2>/dev/null || { echo "  No config, exiting"; exit 0; }
 
-[ "$is_db_user" != "1" ] && exit 0  # No es usuario de BD
+  # Verificar si es usuario de BD
+  is_db_user=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+    -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+    -t -A -c "SELECT 1 FROM users WHERE username = '${username}' AND is_active = 1" \
+    < /dev/null 2>/dev/null)
 
-# Verificar si la contraseña está expirada
-changed_at=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
-  -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
-  -t -A -c "SELECT password_changed_at FROM users WHERE username = '${username}' AND is_active = 1" \
-  < /dev/null 2>/dev/null)
+  echo "  is_db_user=$is_db_user"
+  [ "$is_db_user" != "1" ] && { echo "  Not DB user, exiting"; exit 0; }
 
-# Si está marcada en época (1970-01-01), rechazar login
-if [ -n "$changed_at" ] && [[ "$changed_at" =~ 1970-01-01 ]]; then
-  echo "⚠️  PASSWORD EXPIRED for user: $username" >> /var/log/pam_account.log 2>&1
+  # Verificar si la contraseña está expirada
+  changed_at=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+    -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+    -t -A -c "SELECT password_changed_at FROM users WHERE username = '${username}' AND is_active = 1" \
+    < /dev/null 2>/dev/null)
 
-  # Mostrar mensaje al usuario
-  echo "" >&2
-  echo "════════════════════════════════════════" >&2
-  echo "  ⚠️  YOUR PASSWORD HAS EXPIRED" >&2
-  echo "════════════════════════════════════════" >&2
-  echo "" >&2
-  echo "You must change your password to continue." >&2
-  echo "Please login again from a different machine" >&2
-  echo "and run 'passwd' to change it." >&2
-  echo "" >&2
-  echo "Contact your administrator if you need help." >&2
-  echo "════════════════════════════════════════" >&2
+  echo "  password_changed_at=$changed_at"
 
-  sleep 1
-  exit 1
-fi
+  # Si está marcada en época (1970-01-01), crear flag para que /etc/bashrc fuerze cambio
+  if [ -n "$changed_at" ] && [[ "$changed_at" =~ 1970-01-01 ]]; then
+    # Crear archivo flag en /tmp que será detectado por /etc/bashrc o /etc/profile.d
+    touch /tmp/expired_passwd_${username}
+    chmod 666 /tmp/expired_passwd_${username}
+    echo "  Created flag /tmp/expired_passwd_${username} (mode 666)"
+    echo "⚠️  PASSWORD EXPIRED for user: $username" >> /var/log/pam_account.log 2>&1
+  else
+    echo "  Password not expired"
+  fi
 
-exit 0
+  # PERMITIR LOGIN - El cambio de contraseña será forzado por /etc/bashrc o /etc/profile.d
+  echo "  Allowing login"
+  exit 0
+} >> /var/log/pam_account.log 2>&1
 SCRIPT_EOF
 
 chmod +x /usr/local/bin/check-password-expired.sh
+
+# 4.6 Crear script para forzar cambio de contraseña en sesión interactiva
+cat > /etc/profile.d/force-password-change.sh <<'PROFILE_EOF'
+#!/bin/bash
+# Script ejecutado en /etc/profile.d para forzar cambio de contraseña
+# Si el usuario tiene una contraseña expirada (flag en /tmp), fuerza passwd
+
+# Solo ejecutar en sesiones interactivas
+[[ -z "$PS1" ]] && return 0
+
+username="$(whoami)"
+
+# Verificar si existe el flag de contraseña expirada
+if [ -f "/tmp/expired_passwd_${username}" ]; then
+  # Mostrar aviso
+  echo ""
+  echo "════════════════════════════════════════════════════════"
+  echo "  ⚠️  YOUR PASSWORD HAS EXPIRED"
+  echo "════════════════════════════════════════════════════════"
+  echo ""
+  echo "You must change your password now to continue."
+  echo ""
+
+  # Forzar cambio de contraseña
+  if passwd; then
+    echo ""
+    echo "✅ Password changed successfully!"
+    echo ""
+
+    # Actualizar la BD con la nueva fecha
+    source /etc/default/sssd-pgsql 2>/dev/null
+    if [ -n "$DB_HOST" ]; then
+      PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+        -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+        -c "UPDATE users SET password_changed_at = NOW() WHERE username = '${username}';" \
+        < /dev/null 2>/dev/null || true
+    fi
+
+    # Remover el flag
+    rm -f "/tmp/expired_passwd_${username}" 2>/dev/null || true
+  else
+    echo ""
+    echo "❌ Password change failed. Please try again."
+    echo ""
+    exit 1
+  fi
+fi
+PROFILE_EOF
+
+chmod 644 /etc/profile.d/force-password-change.sh
+
+# Agregar el mismo check a /etc/bashrc para asegurar ejecución en cualquier sesión bash
+if ! grep -q "force-password-change" /etc/bashrc; then
+  cat >> /etc/bashrc <<'BASHRC_EOF'
+
+# Forzar cambio de contraseña si está expirada (ejecutado en cualquier sesión bash interactiva)
+if [[ -n "$PS1" ]]; then
+  _username="$(whoami)"
+  if [ -f "/tmp/expired_passwd_${_username}" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════"
+    echo "  ⚠️  YOUR PASSWORD HAS EXPIRED"
+    echo "════════════════════════════════════════════════════════"
+    echo ""
+    echo "You must change your password now to continue."
+    echo ""
+
+    if passwd; then
+      echo ""
+      echo "✅ Password changed successfully!"
+      echo ""
+
+      # Actualizar la BD con la nueva fecha
+      source /etc/default/sssd-pgsql 2>/dev/null
+      if [ -n "$DB_HOST" ]; then
+        PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+          -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+          -c "UPDATE users SET password_changed_at = NOW() WHERE username = '${_username}';" \
+          < /dev/null 2>/dev/null || true
+      fi
+
+      rm -f "/tmp/expired_passwd_${_username}" 2>/dev/null || true
+    else
+      echo ""
+      echo "❌ Password change failed. Please try again."
+      echo ""
+      exit 1
+    fi
+  fi
+fi
+BASHRC_EOF
+fi
+
+# 4.7 Crear script para validar formato de username
+cat > /usr/local/sbin/validate_username.sh <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+# Valida que el username tenga un formato válido para Unix/Linux
+# Se ejecuta como primer check en la fase de auth de PAM
+# Rechaza usernames con caracteres inválidos que podrían causar problemas
+
+set -euo pipefail
+
+username="${PAM_USER:-}"
+
+# Si no hay usuario, fallar
+if [[ -z "$username" ]]; then
+  exit 1
+fi
+
+# Validar formato: comienza con letra minúscula o underscore,
+# seguido de letras, números, underscore o guión
+if [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+  exit 0
+else
+  exit 1
+fi
+SCRIPT_EOF
+
+chmod 755 /usr/local/sbin/validate_username.sh
 
 # Crear configuración PAM
 # IMPORTANTE:
@@ -545,6 +664,10 @@ if [ -f /etc/ssh/sshd_config ]; then
   # Limpiar cualquier línea anterior incorrecta de sssd-pgsql
   sed -i '/.*sssd-pgsql/d' /etc/pam.d/sshd
 
+  # Agregar validación de username al inicio (rechaza caracteres inválidos)
+  sed -i '/^auth.*validate_username/d' /etc/pam.d/sshd
+  sed -i '1i auth    requisite    pam_exec.so quiet /usr/local/sbin/validate_username.sh' /etc/pam.d/sshd
+
   # Agregar include de sssd-pgsql primero (intenta BD, luego common-auth maneja fallback local)
   sed -i '/^@include common-auth/i @include sssd-pgsql' /etc/pam.d/sshd
 
@@ -579,6 +702,14 @@ if [ -f /etc/ssh/sshd_config ]; then
   # Reiniciar SSH
   systemctl restart sshd || systemctl restart ssh
   echo "   ✅ SSH configurado y reiniciado"
+
+  # Validar que validate_username está en el archivo PAM
+  if grep -q "validate_username" /etc/pam.d/sshd; then
+    echo "   ✅ validate_username.sh configurado en SSH PAM"
+  else
+    echo "   ❌ ERROR: validate_username.sh NO encontrado en /etc/pam.d/sshd"
+    exit 1
+  fi
 else
   echo "   ⚠️  No se encontró /etc/ssh/sshd_config"
 fi
