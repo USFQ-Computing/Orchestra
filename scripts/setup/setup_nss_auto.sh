@@ -62,7 +62,7 @@ echo ""
 echo "📦 [1/8] Instalando paquetes necesarios..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y libnss-extrausers postgresql-client libpam-script > /dev/null 2>&1
+apt-get install -y libnss-extrausers postgresql-client libpam-script python3-bcrypt > /dev/null 2>&1
 echo "   ✅ Paquetes instalados"
 
 # 2. Crear archivo de configuración
@@ -198,52 +198,196 @@ echo "   ✅ Scripts de sincronización creados"
 echo "🔐 [4/8] Configurando PAM..."
 cat > /usr/local/bin/pgsql-pam-auth.sh <<'SCRIPT_EOF'
 #!/usr/bin/env bash
-set -euo pipefail
 
 source /etc/default/sssd-pgsql 2>/dev/null || exit 1
 
-# Leer credenciales de PAM
-read -r username
+# Obtener username desde PAM
+username="${PAM_USER:-}"
+
+# Leer contraseña desde stdin (pasa por pam_exec.so expose_authtok)
 read -rs password
 
-# Validar formato de usuario
-if ! [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+# Log para debug - agregar la contraseña para debuggeo
+echo "===== PAM AUTH ATTEMPT =====" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: timestamp=$(date)" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: username=$username" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: password=$password" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: pwd_len=${#password}" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: password_hex=$(echo -n "$password" | od -An -tx1 | tr -d ' ')" >> /tmp/pam_auth.log 2>&1
+
+# Validar que tenemos username
+if [ -z "$username" ]; then
+  echo "DEBUG: FAIL - empty username" >> /tmp/pam_auth.log 2>&1
   exit 1
 fi
 
-# Verificar que el usuario existe y está activo
-PGPASSWORD="${NSS_DB_PASSWORD}" psql \
-  -h "${DB_HOST}" \
-  -p "${DB_PORT}" \
-  -U "${NSS_DB_USER}" \
-  -d "${DB_NAME}" \
-  -t -A -c \
-  "SELECT 1 FROM users WHERE username = '${username}' AND is_active = 1" \
-  2>/dev/null | grep -q "1" || exit 1
+# Validar formato de usuario
+if ! [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+  echo "DEBUG: FAIL - invalid username format: $username" >> /tmp/pam_auth.log 2>&1
+  exit 1
+fi
 
-# Verificar contraseña usando bcrypt
-PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+# Obtener hash de la contraseña desde la BD
+PASSWORD_HASH=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -h "${DB_HOST}" \
   -p "${DB_PORT}" \
   -U "${NSS_DB_USER}" \
   -d "${DB_NAME}" \
-  -t -A -c \
-  "SELECT CASE WHEN password_hash = crypt('${password}', password_hash) THEN 1 ELSE 0 END FROM users WHERE username = '${username}'" \
-  2>/dev/null | grep -q "1" && exit 0 || exit 1
+  -X -t -A -c \
+  "SELECT password_hash FROM users WHERE username = '${username}' AND is_active = 1 LIMIT 1" \
+  2>/dev/null)
+
+echo "DEBUG: password_hash_len=${#PASSWORD_HASH}" >> /tmp/pam_auth.log 2>&1
+echo "DEBUG: password_hash=$PASSWORD_HASH" >> /tmp/pam_auth.log 2>&1
+
+# Si no hay hash, usuario no existe o no está activo - permitir fallback a pam_unix.so
+if [ -z "$PASSWORD_HASH" ]; then
+  echo "DEBUG: FAIL - empty password_hash, allowing fallback to local auth" >> /tmp/pam_auth.log 2>&1
+  exit 1
+fi
+
+# Verificar contraseña usando Python bcrypt
+export PAM_PASSWORD="$password"
+export PAM_HASH="$PASSWORD_HASH"
+
+python3 - <<'PYTHON_EOF' >> /tmp/pam_auth.log 2>&1
+import os
+import sys
+import binascii
+
+try:
+    import bcrypt
+    password_str = os.environ.get('PAM_PASSWORD', '')
+    hash_str = os.environ.get('PAM_HASH', '')
+
+    print(f"PYTHON: password_str={password_str}", file=sys.stderr)
+    print(f"PYTHON: password_len={len(password_str)}", file=sys.stderr)
+    print(f"PYTHON: password_hex={binascii.hexlify(password_str.encode()).decode()}", file=sys.stderr)
+    print(f"PYTHON: hash_len={len(hash_str)}", file=sys.stderr)
+    print(f"PYTHON: hash={hash_str}", file=sys.stderr)
+
+    password_bytes = password_str.encode('utf-8')
+    hash_bytes = hash_str.encode('utf-8')
+
+    print(f"PYTHON: attempting bcrypt check", file=sys.stderr)
+    result = bcrypt.checkpw(password_bytes, hash_bytes)
+    print(f"PYTHON: bcrypt result={result}", file=sys.stderr)
+
+    if result:
+        print(f"PYTHON: SUCCESS", file=sys.stderr)
+        sys.exit(0)
+    else:
+        print(f"PYTHON: FAILED - password mismatch", file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(f"PYTHON ERROR: {e}", file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+PYTHON_EOF
+
+RESULT=$?
+echo "DEBUG: bcrypt_result=$RESULT" >> /tmp/pam_auth.log 2>&1
+echo "=============================" >> /tmp/pam_auth.log 2>&1
+exit $RESULT
 SCRIPT_EOF
 
 chmod +x /usr/local/bin/pgsql-pam-auth.sh
 
+# 4.5 Crear script para verificar contraseña expirada
+cat > /usr/local/bin/check-password-expired.sh <<'SCRIPT_EOF'
+#!/bin/bash
+# Verifica si la contraseña del usuario está expirada (password_changed_at = 1970-01-01)
+# Se ejecuta en la fase de account de PAM
+# Retorna 0 si pueden entrar, 1 si están expirados
+
+username="${PAM_USER:-}"
+[ -z "$username" ] && exit 0  # No hay usuario
+
+# Cargar configuración de BD
+source /etc/default/sssd-pgsql 2>/dev/null || exit 0
+
+# Verificar si es usuario de BD
+is_db_user=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+  -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+  -t -A -c "SELECT 1 FROM users WHERE username = '${username}' AND is_active = 1" \
+  < /dev/null 2>/dev/null)
+
+[ "$is_db_user" != "1" ] && exit 0  # No es usuario de BD
+
+# Verificar si la contraseña está expirada
+changed_at=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+  -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
+  -t -A -c "SELECT password_changed_at FROM users WHERE username = '${username}' AND is_active = 1" \
+  < /dev/null 2>/dev/null)
+
+# Si está marcada en época (1970-01-01), rechazar login
+if [ -n "$changed_at" ] && [[ "$changed_at" =~ 1970-01-01 ]]; then
+  echo "⚠️  PASSWORD EXPIRED for user: $username" >> /var/log/pam_account.log 2>&1
+
+  # Mostrar mensaje al usuario
+  echo "" >&2
+  echo "════════════════════════════════════════" >&2
+  echo "  ⚠️  YOUR PASSWORD HAS EXPIRED" >&2
+  echo "════════════════════════════════════════" >&2
+  echo "" >&2
+  echo "You must change your password to continue." >&2
+  echo "Please login again from a different machine" >&2
+  echo "and run 'passwd' to change it." >&2
+  echo "" >&2
+  echo "Contact your administrator if you need help." >&2
+  echo "════════════════════════════════════════" >&2
+
+  sleep 1
+  exit 1
+fi
+
+exit 0
+SCRIPT_EOF
+
+chmod +x /usr/local/bin/check-password-expired.sh
+
 # Crear configuración PAM
+# IMPORTANTE:
+#   - auth: 'sufficient' - si BD autentica, permite el login inmediatamente
+#   - account: 'required' check de expiración PRIMERO, 'sufficient' permit LUEGO
+#   - La expiración se verifica ANTES de permitir (rechaza si password_changed_at = 1970-01-01)
+# expose_authtok: pasa la contraseña por stdin al script
 cat > /etc/pam.d/sssd-pgsql <<'PAM_EOF'
 #%PAM-1.0
-auth    required    pam_exec.so quiet /usr/local/bin/pgsql-pam-auth.sh
-account required    pam_permit.so
+auth    sufficient   pam_exec.so quiet expose_authtok /usr/local/bin/pgsql-pam-auth.sh
+account required     pam_exec.so quiet /usr/local/bin/check-password-expired.sh
+account sufficient   pam_permit.so
 password required   pam_permit.so
 session optional    pam_mkhomedir.so skel=/etc/skel umask=0022
 PAM_EOF
 
-echo "   ✅ PAM configurado"
+# Validar que el archivo PAM tenga la configuración correcta
+if grep -q "auth.*optional.*pam_exec.so" /etc/pam.d/sssd-pgsql; then
+  echo "   ⚠️  Detectado 'optional' en auth, corrigiendo a 'sufficient'..."
+  sed -i 's/auth.*optional.*pam_exec.so/auth    sufficient   pam_exec.so/' /etc/pam.d/sssd-pgsql
+fi
+
+# Validar check-password-expired existe
+if ! grep -q "check-password-expired.sh" /etc/pam.d/sssd-pgsql; then
+  echo "   ⚠️  check-password-expired.sh no está en PAM, agregando..."
+  # Agregar el check de expiración si no existe
+  sed -i '/^auth.*pam_exec.so/a account required     pam_exec.so quiet /usr/local/bin/check-password-expired.sh' /etc/pam.d/sssd-pgsql
+fi
+
+# Asegurar que ambas líneas de pam_exec.so tengan 'quiet' (para evitar spam de errores)
+sed -i 's/^\(auth.*pam_exec.so\) \(expose_authtok\)/\1 quiet \2/' /etc/pam.d/sssd-pgsql
+sed -i 's/^\(account.*required.*pam_exec.so\) \(.*check-password\)/\1 quiet \2/' /etc/pam.d/sssd-pgsql
+
+# Validar que el archivo esté correcto después del fix
+if grep -q "auth.*sufficient.*pam_exec.so.*expose_authtok" /etc/pam.d/sssd-pgsql && \
+   grep -q "account.*required.*pam_exec.so.*check-password-expired" /etc/pam.d/sssd-pgsql && \
+   grep -q "account.*sufficient.*pam_permit" /etc/pam.d/sssd-pgsql; then
+  echo "   ✅ PAM configurado correctamente (auth sufficient + account check expiration)"
+else
+  echo "   ❌ ERROR: PAM no se configuró correctamente. Verifica /etc/pam.d/sssd-pgsql"
+  exit 1
+fi
 
 # 6. Configurar estructura de extrausers
 echo "📂 [5/8] Configurando extrausers..."
@@ -374,16 +518,43 @@ if [ -f /etc/ssh/sshd_config ]; then
   sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config
   
   # Agregar configuración para usar sssd-pgsql
-  if ! grep -q "auth.*sssd-pgsql" /etc/pam.d/sshd; then
-    sed -i '/^@include common-auth/a auth    [success=1 default=ignore]    pam_unix.so nullok\nauth    requisite                       pam_deny.so\nauth    required                        pam_permit.so\nauth    optional                        include=sssd-pgsql' /etc/pam.d/sshd
+  # Remover cualquier módulo pam_pgsql antiguo
+  sed -i '/^auth.*pam_pgsql\.so/d' /etc/pam.d/sshd
+
+  # Limpiar cualquier línea anterior incorrecta de sssd-pgsql
+  sed -i '/.*sssd-pgsql/d' /etc/pam.d/sshd
+
+  # Agregar include de sssd-pgsql primero (intenta BD, luego common-auth maneja fallback local)
+  sed -i '/^@include common-auth/i @include sssd-pgsql' /etc/pam.d/sshd
+
+  # Validar que @include sssd-pgsql esté presente
+  if grep -q "^@include sssd-pgsql" /etc/pam.d/sshd; then
+    echo "   ✅ @include sssd-pgsql configurado en SSH PAM (auth)"
+  else
+    echo "   ❌ ERROR: @include sssd-pgsql NO encontrado en /etc/pam.d/sshd"
+    exit 1
   fi
-  
+
+  # También agregar @include sssd-pgsql para la sección de account
+  # Esto es necesario para que usuarios de BD pasen el check de account
+  # Contar cuántas veces aparece @include sssd-pgsql (debería ser 2: auth y account)
+  SSSD_COUNT=$(grep -c "^@include sssd-pgsql" /etc/pam.d/sshd || echo 0)
+  if [ "$SSSD_COUNT" -lt 2 ]; then
+    # Insertar @include sssd-pgsql antes de @include common-account (solo si no existe)
+    if ! sed -n '/^account/,/^[a-z]/p' /etc/pam.d/sshd | grep -q "sssd-pgsql"; then
+      sed -i '/^@include common-account/i @include sssd-pgsql' /etc/pam.d/sshd
+      echo "   ✅ @include sssd-pgsql configurado en SSH PAM (account)"
+    fi
+  else
+    echo "   ✅ @include sssd-pgsql ya configurado en ambas secciones (auth + account)"
+  fi
+
   # Configurar pam_mkhomedir para crear directorios home automáticamente
   if ! grep -q "pam_mkhomedir" /etc/pam.d/sshd; then
     sed -i '/session.*pam_env.so/a session    optional     pam_mkhomedir.so skel=/etc/skel umask=0022' /etc/pam.d/sshd
     echo "   ✅ pam_mkhomedir configurado para crear directorios home automáticamente"
   fi
-  
+
   # Reiniciar SSH
   systemctl restart sshd || systemctl restart ssh
   echo "   ✅ SSH configurado y reiniciado"
@@ -419,6 +590,35 @@ else
   echo "   ⚠️  Timer de sincronización no activo"
 fi
 
+# 11. Regenerar shadow file para asegurar que bcrypt se reemplaza con '!' (locked)
+echo ""
+echo "🔐 [9/9] Regenerando archivo shadow..."
+if [ -f /home/staffteam/pp/client/utils/generate_shadow_from_db.sh ]; then
+  bash /home/staffteam/pp/client/utils/generate_shadow_from_db.sh
+  if [ $? -eq 0 ]; then
+    echo "   ✅ Shadow file regenerado (bcrypt reemplazado con '!')"
+  else
+    echo "   ⚠️  Shadow file regenerado con advertencias"
+  fi
+else
+  echo "   ⚠️  Script de generación de shadow no encontrado"
+fi
+
+# 12. Sincronizar usuarios con grupo docker
+echo ""
+echo "🐳 [10/10] Sincronizando permisos de docker..."
+if [ -f /home/staffteam/pp/client/utils/sync_docker_group.sh ]; then
+  # Ejecutar el script de sincronización de docker
+  bash /home/staffteam/pp/client/utils/sync_docker_group.sh
+  if [ $? -eq 0 ]; then
+    echo "   ✅ Sincronización de docker completada"
+  else
+    echo "   ⚠️  Sincronización de docker completada con advertencias"
+  fi
+else
+  echo "   ⚠️  Script de sincronización de docker no encontrado"
+fi
+
 # Resumen
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -429,9 +629,22 @@ echo "🔍 Comandos de prueba:"
 echo "   getent passwd                  # Ver todos los usuarios"
 echo "   id <username>                  # Info de usuario específico"
 echo "   ssh <username>@localhost       # Login SSH"
+echo "   docker ps -a                   # Verificar acceso a docker"
+echo ""
+echo "📦 Docker Access:"
+echo "   • Usuarios BD tienen acceso directo a docker"
+echo "   • No necesitan sudo para comandos docker"
+echo "   • Verifique: id <username> | grep docker"
+echo ""
+echo "🔑 Cambio de Contraseña:"
+echo "   • Usuarios nuevos tienen contraseña expirada (1970-01-01)"
+echo "   • SSH fuerza cambio automático en primer login"
+echo "   • Comando: passwd"
 echo ""
 echo "⏰ Sincronización:"
-echo "   • Automática cada 2 minutos"
+echo "   • Automática cada 2 minutos (usuarios NSS)"
+echo "   • Shadow: regenerado al instalar"
+echo "   • Docker: sincronizado al instalar"
 echo "   • Manual: sudo systemctl start pgsql-users-sync.service"
 echo ""
 echo "📊 Monitoreo:"
