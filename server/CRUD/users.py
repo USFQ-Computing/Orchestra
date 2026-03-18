@@ -156,7 +156,13 @@ def update_user_password(
     logger.info(f"🔐 Updating password for user: {db_user.username} (id={user_id})")
 
     hashed = hash_password(new_password)
-    db.query(User).filter(User.id == user_id).update({"password_hash": hashed, "must_change_password": False})
+    db.query(User).filter(User.id == user_id).update(
+        {
+            "password_hash": hashed,
+            "must_change_password": False,
+            "password_changed_at": datetime.now(timezone.utc),
+        }
+    )
     db.commit()
 
     logger.info(f"✅ Password updated successfully for user: {db_user.username}")

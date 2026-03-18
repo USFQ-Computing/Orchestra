@@ -25,6 +25,21 @@ fi
 # Obtener configuración automática del docker-compose.yml y .env
 echo "📋 Detectando configuración..."
 
+# Cargar variables desde .env del proyecto (si existe)
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+ENV_FILE="${PROJECT_ROOT}/.env"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+  echo "   ✅ .env cargado desde $ENV_FILE"
+else
+  echo "   ⚠️  .env no encontrado en $ENV_FILE (usando variables de entorno/defaults)"
+fi
+
 # Buscar el puerto publicado de client_db
 CLIENT_DB_PORT=$(docker compose ps client_db --format json 2>/dev/null | grep -oP '0\.0\.0\.0:\K\d+(?=->5432)' || echo "5433")
 
@@ -359,6 +374,8 @@ cat > /usr/local/bin/check-password-expired.sh <<'SCRIPT_EOF'
     echo "⚠️  PASSWORD EXPIRED for user: $username" >> /var/log/pam_account.log 2>&1
   else
     echo "  Password not expired"
+    rm -f /tmp/expired_passwd_${username} 2>/dev/null || true
+    echo "  Cleared stale flag /tmp/expired_passwd_${username}"
   fi
 
   # PERMITIR LOGIN - El cambio de contraseña será forzado por /etc/bashrc o /etc/profile.d
@@ -627,10 +644,13 @@ chmod 755 /usr/local/bin/sync_password_change.sh
 touch /var/log/password_sync.log
 chmod 666 /var/log/password_sync.log
 
-# pam_script busca el script de cambio de contraseña en /etc/pam-script.d/pam_script_passwd
+# pam_script usa distintos nombres de hook según versión/distribución.
+# Creamos ambos para cubrir compatibilidad (passwd y chauthtok).
 mkdir -p /etc/pam-script.d
 ln -sf /usr/local/bin/sync_password_change.sh /etc/pam-script.d/pam_script_passwd
 chmod 755 /etc/pam-script.d/pam_script_passwd 2>/dev/null || true
+ln -sf /usr/local/bin/sync_password_change.sh /etc/pam-script.d/pam_script_chauthtok
+chmod 755 /etc/pam-script.d/pam_script_chauthtok 2>/dev/null || true
 
 # Agregar hook PAM para capturar cambios de contraseña.
 # pam_script.so pasa PAM_AUTHTOK como variable de entorno al script

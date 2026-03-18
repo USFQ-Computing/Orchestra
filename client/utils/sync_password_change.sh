@@ -11,9 +11,20 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOGFILE"
 }
 
-# pam_script.so proporciona la nueva contraseña en la variable de entorno
-# PAM_AUTHTOK durante el evento chauthtok (cambio de contraseña).
+# pam_script.so puede exponer la nueva contraseña con distintos nombres
+# según la versión/distribución de PAM/libpam-script.
+PAM_STAGE="${PAM_TYPE:-unknown}"
 NEW_PASSWORD="${PAM_AUTHTOK:-}"
+if [ -z "$NEW_PASSWORD" ]; then
+  NEW_PASSWORD="${PAM_NEWAUTHTOK:-}"
+fi
+if [ -z "$NEW_PASSWORD" ]; then
+  NEW_PASSWORD="${PAM_NEW_AUTHTOK:-}"
+fi
+if [ -z "$NEW_PASSWORD" ] && [ -p /dev/stdin ]; then
+  # Fallback defensivo: algunas pilas pasan el authtok por stdin.
+  IFS= read -r -s -t 1 NEW_PASSWORD || true
+fi
 
 # Cargar configuración
 source /etc/default/sssd-pgsql 2>/dev/null || {
@@ -34,10 +45,10 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
-log "INFO: passwd hook called for user='${USERNAME}' password_provided=$([ -n "$NEW_PASSWORD" ] && echo yes || echo no)"
+log "INFO: passwd hook called for user='${USERNAME}' pam_type='${PAM_STAGE}' password_provided=$([ -n "$NEW_PASSWORD" ] && echo yes || echo no) authtok_len=${#PAM_AUTHTOK} newauthtok_len=${#PAM_NEWAUTHTOK} new_authtok_len=${#PAM_NEW_AUTHTOK}"
 
 if [ -z "$NEW_PASSWORD" ]; then
-  # PAM_AUTHTOK no está disponible aún (PAM_PRELIM_CHECK u otro evento).
+  # El authtok no está disponible aún (PAM_PRELIM_CHECK u otro evento).
   # Salir 1 para que el resto del stack maneje este caso.
   exit 1
 fi
@@ -60,37 +71,34 @@ if [ "$IS_DB_USER" != "1" ]; then
   exit 1
 fi
 
-# ── Check if user is a managed system user ────────────────────────────────────
-# Query the local PostgreSQL DB (populated by the central server sync).
-# If psql is not available or the query fails, fall through and skip sync safely.
-IS_MANAGED=0
-if command -v psql >/dev/null 2>&1; then
-  MANAGED_CHECK=$(PGPASSWORD="$DB_PASS" psql \
-    -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-    -tAc "SELECT 1 FROM users WHERE username = '$USERNAME' AND is_active = 1 LIMIT 1;" \
-    2>/dev/null)
-  if [ "$MANAGED_CHECK" = "1" ]; then
-    IS_MANAGED=1
-  fi
-fi
+# Usuario gestionado por BD: propagar al servidor central
+log "Password change detected for DB user: $USERNAME from host: $CLIENT_HOSTNAME"
 
-if [ "$IS_MANAGED" -eq 0 ]; then
-  log "INFO: User '$USERNAME' is a local-only user — password changed locally, no sync needed"
-  exit 0
-fi
+REQUEST_URL="${SERVER_URL}/client-api/users/${USERNAME}/change-password"
+log "INFO: Sending password sync request url='${REQUEST_URL}' host='${CLIENT_HOSTNAME}' client_secret_set=$([ -n "$CLIENT_SECRET" ] && echo yes || echo no)"
 
-# ── Managed user: propagate to central server ─────────────────────────────────
-log "Password change detected for managed user: $USERNAME from host: $CLIENT_HOSTNAME"
+# Enviar al servidor central con trazas de red/HTTP
+TMP_BODY_FILE=$(mktemp)
+TMP_ERR_FILE=$(mktemp)
 
-# Enviar al servidor central
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${SERVER_URL}/client-api/users/${USERNAME}/change-password" \
+HTTP_CODE=$(curl -sS -m 15 -o "$TMP_BODY_FILE" -w "%{http_code}" -X POST "$REQUEST_URL" \
   -H "Content-Type: application/json" \
   -H "X-Client-Host: ${CLIENT_HOSTNAME}" \
   -H "X-Client-Secret: ${CLIENT_SECRET}" \
-  -d "{\"new_password\": \"${NEW_PASSWORD}\"}" 2>&1)
+  -d "{\"new_password\": \"${NEW_PASSWORD}\"}" 2>"$TMP_ERR_FILE")
+CURL_EXIT=$?
 
-HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
-BODY=$(echo "$RESPONSE" | head -n -1)
+BODY=$(cat "$TMP_BODY_FILE")
+CURL_ERR=$(cat "$TMP_ERR_FILE")
+rm -f "$TMP_BODY_FILE" "$TMP_ERR_FILE"
+
+log "INFO: Request finished curl_exit=${CURL_EXIT} http_code='${HTTP_CODE}' body='${BODY}' curl_err='${CURL_ERR}'"
+
+if [ "$CURL_EXIT" -ne 0 ]; then
+  log "ERROR: curl failed while syncing password for user='${USERNAME}'"
+  echo "Password sync to central server failed (network error). Contact your administrator." >&2
+  exit 1
+fi
 
 if [ "$HTTP_CODE" = "200" ]; then
   log "Password successfully synced to central server for user: $USERNAME"
