@@ -37,14 +37,6 @@ interface Server {
     name: string;
 }
 
-interface User {
-    id: number;
-    username: string;
-    email: string;
-    is_admin: number;
-    is_active: number;
-}
-
 export default function AllContainersPage() {
     const router = useRouter();
     const toast = useToast();
@@ -53,7 +45,6 @@ export default function AllContainersPage() {
     const [allContainers, setAllContainers] = useState<Container[]>([]); // Todos los contenedores sin filtrar
     const [containers, setContainers] = useState<Container[]>([]); // Contenedores filtrados
     const [servers, setServers] = useState<Server[]>([]);
-    const [users, setUsers] = useState<User[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
 
@@ -72,7 +63,6 @@ export default function AllContainersPage() {
     useEffect(() => {
         if (currentUser) {
             fetchServers();
-            fetchUsers();
             fetchContainers();
         }
     }, [currentUser]);
@@ -158,18 +148,6 @@ export default function AllContainersPage() {
             }
         } catch (err) {
             console.error("Error fetching servers:", err);
-        }
-    };
-
-    const fetchUsers = async () => {
-        try {
-            const response = await fetch("/api/users");
-            if (response.ok) {
-                const data = await response.json();
-                setUsers(data);
-            }
-        } catch (err) {
-            console.error("Error fetching users:", err);
         }
     };
 
@@ -729,12 +707,6 @@ export default function AllContainersPage() {
                                                             <span>👤</span>
                                                             <span className="font-medium">
                                                                 {container.username ||
-                                                                    users.find(
-                                                                        (u) =>
-                                                                            u.id ===
-                                                                            container.user_id,
-                                                                    )
-                                                                        ?.username ||
                                                                     `User ${container.user_id}`}
                                                             </span>
                                                         </span>

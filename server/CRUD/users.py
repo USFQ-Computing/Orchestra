@@ -43,10 +43,10 @@ def create_user(db: Session, user: UserCreate, auto_sync: bool = True) -> User:
 
     hashed_password = hash_password(user.password)
 
-    # Get the next available system_uid (starting from 2000)
+    # Get the next available system_uid (starting from 4000)
     max_uid = db.query(func.max(User.system_uid)).scalar()
-    if max_uid is None or max_uid < 2000:
-        next_uid = 2000
+    if max_uid is None or max_uid < 4000:
+        next_uid = 4000
     else:
         next_uid = max_uid + 1
 
@@ -173,7 +173,7 @@ def update_user_password(
 
 
 def expire_user_password(db: Session, user_id: int) -> Optional[User]:
-    """Marca must_change_password=True para forzar cambio en próximo login"""
+    """Marca must_change_password=True y password_changed_at=epoch para forzar cambio en próximo login"""
     db_user = get_user_by_id(db, user_id)
     if not db_user:
         logger.warning(f"⚠️  Cannot expire password for user {user_id}: User not found")
@@ -181,7 +181,10 @@ def expire_user_password(db: Session, user_id: int) -> Optional[User]:
 
     logger.info(f"🔑 Expiring password for user: {db_user.username} (id={user_id})")
 
-    db.query(User).filter(User.id == user_id).update({"must_change_password": True})
+    db.query(User).filter(User.id == user_id).update({
+        "must_change_password": True,
+        "password_changed_at": datetime(1970, 1, 1, tzinfo=timezone.utc)
+    })
     db.commit()
 
     logger.info(f"✅ Password expired for user: {db_user.username}")

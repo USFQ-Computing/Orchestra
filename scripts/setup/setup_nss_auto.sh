@@ -63,6 +63,12 @@ echo "   SERVER_URL: $SERVER_URL"
 echo "   CLIENT_SECRET: $([ -n "$CLIENT_SECRET" ] && echo '(set)' || echo '(not set - endpoint will return 503)')"
 echo ""
 
+if [ -z "$CLIENT_SECRET" ]; then
+  echo "❌ CLIENT_SECRET no está configurado."
+  echo "   Exporta CLIENT_SECRET (el mismo valor que usa el servicio api) y vuelve a ejecutar este script."
+  exit 1
+fi
+
 # Verificar conexión a la base de datos
 echo "🔌 Verificando conexión a PostgreSQL..."
 if ! PGPASSWORD="${NSS_DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" -c "SELECT 1" > /dev/null 2>&1; then
@@ -155,17 +161,11 @@ DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -p "${DB_PORT}" \
   -U "${NSS_DB_USER}" \
   -d "${DB_NAME}" \
-  -t -A -F: -c \
+  -t -A -F$'\t' -c \
   "SELECT
     username,
-    password_hash,
-    CASE WHEN must_change_password THEN '0' ELSE '18000' END,
-    '0',
-    '99999',
-    '7',
-    '',
-    '',
-    ''
+    CASE WHEN must_change_password THEN '0' ELSE FLOOR(EXTRACT(EPOCH FROM COALESCE(password_changed_at, created_at, NOW())) / 86400)::INTEGER END,
+    COALESCE(password_max_age_days::TEXT, '99999')
    FROM users
    WHERE is_active = 1
    ORDER BY system_uid" 2>/dev/null)
@@ -357,16 +357,22 @@ cat > /usr/local/bin/check-password-expired.sh <<'SCRIPT_EOF'
   echo "  is_db_user=$is_db_user"
   [ "$is_db_user" != "1" ] && { echo "  Not DB user, exiting"; exit 0; }
 
-  # Verificar si la contraseña está expirada
-  changed_at=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+  # Verificar si la contraseña está expirada.
+  # Debe forzarse cambio si:
+  # 1) must_change_password = true (frontend/admin expire)
+  # 2) password_changed_at está en época (1970-01-01)
+  status_row=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
     -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
-    -t -A -c "SELECT password_changed_at FROM users WHERE username = '${username}' AND is_active = 1" \
+    -t -A -F: -c "SELECT COALESCE(must_change_password::text, 'f'), COALESCE(password_changed_at::text, '') FROM users WHERE username = '${username}' AND is_active = 1" \
     < /dev/null 2>/dev/null)
 
+  must_change="$(echo "$status_row" | cut -d: -f1)"
+  changed_at="$(echo "$status_row" | cut -d: -f2-)"
+
+  echo "  must_change_password=$must_change"
   echo "  password_changed_at=$changed_at"
 
-  # Si está marcada en época (1970-01-01), crear flag para que /etc/bashrc fuerze cambio
-  if [ -n "$changed_at" ] && [[ "$changed_at" =~ 1970-01-01 ]]; then
+  if [ "$must_change" = "t" ] || { [ -n "$changed_at" ] && [[ "$changed_at" =~ 1970-01-01 ]]; }; then
     # Crear archivo flag en /tmp que será detectado por /etc/bashrc o /etc/profile.d
     touch /tmp/expired_passwd_${username}
     chmod 666 /tmp/expired_passwd_${username}
@@ -671,11 +677,14 @@ if [ -f /etc/ssh/sshd_config ]; then
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
   fi
   
-  # Habilitar PAM y autenticación por contraseña
+  # Habilitar PAM y autenticación por contraseña.
+  # KbdInteractive/ChallengeResponse deben estar en "yes" para que OpenSSH
+  # pueda gestionar el flujo PAM de contraseña expirada (passwd -e / chage -d 0)
+  # en usuarios locales.
   sed -i 's/^#*UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
   sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-  sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
-  sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config
+  sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
+  sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
   
   # Agregar configuración para usar sssd-pgsql
   # Remover cualquier módulo pam_pgsql antiguo
@@ -688,29 +697,28 @@ if [ -f /etc/ssh/sshd_config ]; then
   sed -i '/^auth.*validate_username/d' /etc/pam.d/sshd
   sed -i '1i auth    requisite    pam_exec.so quiet /usr/local/sbin/validate_username.sh' /etc/pam.d/sshd
 
-  # Agregar include de sssd-pgsql primero (intenta BD, luego common-auth maneja fallback local)
-  sed -i '/^@include common-auth/i @include sssd-pgsql' /etc/pam.d/sshd
+  # Enlazar PAM explícitamente en sshd para evitar ambigüedad de @include.
+  # auth: intenta contra BD (si falla, continúa con common-auth para usuarios locales)
+  sed -i '/pam_exec\.so.*pgsql-pam-auth\.sh/d' /etc/pam.d/sshd
+  sed -i '/^@include common-auth/i auth    sufficient   pam_exec.so quiet expose_authtok /usr/local/bin/pgsql-pam-auth.sh' /etc/pam.d/sshd
 
-  # Validar que @include sssd-pgsql esté presente
-  if grep -q "^@include sssd-pgsql" /etc/pam.d/sshd; then
-    echo "   ✅ @include sssd-pgsql configurado en SSH PAM (auth)"
+  # account: siempre ejecuta check de expiración para usuarios de BD
+  sed -i '/pam_exec\.so.*check-password-expired\.sh/d' /etc/pam.d/sshd
+  sed -i '/^@include common-account/i account required     pam_exec.so quiet /usr/local/bin/check-password-expired.sh' /etc/pam.d/sshd
+
+  # Validar que ambas líneas estén presentes
+  if grep -q "auth.*pam_exec\.so.*pgsql-pam-auth\.sh" /etc/pam.d/sshd; then
+    echo "   ✅ SSH PAM auth de BD configurado"
   else
-    echo "   ❌ ERROR: @include sssd-pgsql NO encontrado en /etc/pam.d/sshd"
+    echo "   ❌ ERROR: No se pudo configurar auth pam_exec en /etc/pam.d/sshd"
     exit 1
   fi
 
-  # También agregar @include sssd-pgsql para la sección de account
-  # Esto es necesario para que usuarios de BD pasen el check de account
-  # Contar cuántas veces aparece @include sssd-pgsql (debería ser 2: auth y account)
-  SSSD_COUNT=$(grep -c "^@include sssd-pgsql" /etc/pam.d/sshd || echo 0)
-  if [ "$SSSD_COUNT" -lt 2 ]; then
-    # Insertar @include sssd-pgsql antes de @include common-account (solo si no existe)
-    if ! sed -n '/^account/,/^[a-z]/p' /etc/pam.d/sshd | grep -q "sssd-pgsql"; then
-      sed -i '/^@include common-account/i @include sssd-pgsql' /etc/pam.d/sshd
-      echo "   ✅ @include sssd-pgsql configurado en SSH PAM (account)"
-    fi
+  if grep -q "account.*pam_exec\.so.*check-password-expired\.sh" /etc/pam.d/sshd; then
+    echo "   ✅ SSH PAM account check de expiración configurado"
   else
-    echo "   ✅ @include sssd-pgsql ya configurado en ambas secciones (auth + account)"
+    echo "   ❌ ERROR: No se pudo configurar account pam_exec en /etc/pam.d/sshd"
+    exit 1
   fi
 
   # Configurar pam_mkhomedir para crear directorios home automáticamente

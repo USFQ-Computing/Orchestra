@@ -21,6 +21,8 @@ from ..CRUD.users import get_user_by_id
 from ..models.models import (
     ContainerCreate,
     ContainerResponse,
+    Server,
+    User,
 )
 from ..utils.auth import get_user_from_token
 from ..utils.container_sync import (
@@ -41,6 +43,47 @@ from ..utils.docker_remote import (
 from ..utils.docker_validators import DockerValidationError
 
 router = APIRouter(prefix="/containers", tags=["containers"])
+
+
+def _build_container_responses(
+    db: Session,
+    containers,
+) -> List[ContainerResponse]:
+    """Build container responses without N+1 queries."""
+    if not containers:
+        return []
+
+    server_ids = {container.server_id for container in containers}
+    user_ids = {container.user_id for container in containers}
+
+    servers = db.query(Server).filter(Server.id.in_(server_ids)).all() if server_ids else []
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+
+    server_by_id = {server.id: server for server in servers}
+    user_by_id = {container_user.id: container_user for container_user in users}
+
+    result = []
+    for container in containers:
+        server = server_by_id.get(container.server_id)
+        container_user = user_by_id.get(container.user_id)
+        container_dict = {
+            "id": container.id,
+            "name": container.name,
+            "user_id": container.user_id,
+            "username": container_user.username if container_user else None,
+            "server_id": container.server_id,
+            "server_name": server.name if server else "Unknown",
+            "server_ip": server.ip_address if server else None,
+            "image": container.image,
+            "ports": container.ports,
+            "status": container.status,
+            "is_public": container.is_public,
+            "container_id": container.container_id,
+            "created_at": container.created_at,
+        }
+        result.append(ContainerResponse(**container_dict))
+
+    return result
 
 
 def get_current_user(
@@ -71,30 +114,7 @@ def get_my_containers(
 ):
     """Obtiene todos los contenedores del usuario actual"""
     containers = get_containers_by_user(db, user.id)
-
-    # Agregar información del servidor y usuario
-    result = []
-    for container in containers:
-        server = get_server_by_id(db, container.server_id)
-        container_user = get_user_by_id(db, container.user_id)
-        container_dict = {
-            "id": container.id,
-            "name": container.name,
-            "user_id": container.user_id,
-            "username": container_user.username if container_user else None,
-            "server_id": container.server_id,
-            "server_name": server.name if server else "Unknown",
-            "server_ip": server.ip_address if server else None,
-            "image": container.image,
-            "ports": container.ports,
-            "status": container.status,
-            "is_public": container.is_public,
-            "container_id": container.container_id,
-            "created_at": container.created_at,
-        }
-        result.append(ContainerResponse(**container_dict))
-
-    return result
+    return _build_container_responses(db, containers)
 
 
 @router.get("/public", response_model=List[ContainerResponse])
@@ -105,30 +125,7 @@ def get_public_containers_list(
     """Obtiene todos los contenedores públicos"""
     """Obtiene todos los contenedores públicos (disponible para todos los usuarios)"""
     containers = get_public_containers(db)
-
-    # Agregar información del servidor y usuario
-    result = []
-    for container in containers:
-        server = get_server_by_id(db, container.server_id)
-        container_user = get_user_by_id(db, container.user_id)
-        container_dict = {
-            "id": container.id,
-            "name": container.name,
-            "user_id": container.user_id,
-            "username": container_user.username if container_user else None,
-            "server_id": container.server_id,
-            "server_name": server.name if server else "Unknown",
-            "server_ip": server.ip_address if server else None,
-            "image": container.image,
-            "ports": container.ports,
-            "status": container.status,
-            "is_public": container.is_public,
-            "container_id": container.container_id,
-            "created_at": container.created_at,
-        }
-        result.append(ContainerResponse(**container_dict))
-
-    return result
+    return _build_container_responses(db, containers)
 
 
 @router.get("/all", response_model=List[ContainerResponse])
@@ -157,30 +154,7 @@ def get_all_containers_list(
     containers = get_all_containers(
         db, server_id=server_id, user_id=user_id, status=status, is_public=is_public
     )
-
-    # Agregar información del servidor y usuario
-    result = []
-    for container in containers:
-        server = get_server_by_id(db, container.server_id)
-        user = get_user_by_id(db, container.user_id)
-        container_dict = {
-            "id": container.id,
-            "name": container.name,
-            "user_id": container.user_id,
-            "username": user.username if user else None,
-            "server_id": container.server_id,
-            "server_name": server.name if server else "Unknown",
-            "server_ip": server.ip_address if server else None,
-            "image": container.image,
-            "ports": container.ports,
-            "status": container.status,
-            "is_public": container.is_public,
-            "container_id": container.container_id,
-            "created_at": container.created_at,
-        }
-        result.append(ContainerResponse(**container_dict))
-
-    return result
+    return _build_container_responses(db, containers)
 
 
 @router.get("/{container_id}", response_model=ContainerResponse)

@@ -29,8 +29,8 @@ TARGET_FILE="/var/lib/extrausers/shadow"
 # Fetch user metadata (no password hash) from PostgreSQL.
 #
 # sp_lstchg: EXTRACT(EPOCH FROM ...) / 86400 gives days since Unix epoch.
-#   - Use password_changed_at if set, otherwise fall back to created_at,
-#     otherwise fall back to today (CURRENT_DATE).
+#   - If must_change_password=true, set sp_lstchg=0 (epoch 1970-01-01) → forces immediate expiry
+#   - Otherwise use password_changed_at if set, fall back to created_at, otherwise today
 #
 # sp_max: use password_max_age_days when set, otherwise 99999 (never expires).
 #
@@ -48,7 +48,7 @@ DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -t -A -F$'\t' -c \
   "SELECT
     username,
-    FLOOR(EXTRACT(EPOCH FROM COALESCE(password_changed_at, created_at, NOW())) / 86400)::INTEGER,
+    CASE WHEN must_change_password THEN '0' ELSE FLOOR(EXTRACT(EPOCH FROM COALESCE(password_changed_at, created_at, NOW())) / 86400)::INTEGER END,
     COALESCE(password_max_age_days::TEXT, '99999')
    FROM users
    WHERE is_active = 1

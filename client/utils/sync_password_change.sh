@@ -37,6 +37,12 @@ SERVER_URL="${SERVER_URL:-http://localhost:8000}"
 CLIENT_SECRET="${CLIENT_SECRET:-}"
 CLIENT_HOSTNAME="${HOSTNAME:-$(hostname)}"
 
+if [ -z "$CLIENT_SECRET" ]; then
+  log "ERROR: CLIENT_SECRET is empty in /etc/default/sssd-pgsql"
+  echo "Password sync to central server failed (missing client secret). Contact your administrator." >&2
+  exit 1
+fi
+
 # PAM proporciona el username en PAM_USER
 USERNAME="${PAM_USER}"
 
@@ -77,6 +83,16 @@ log "Password change detected for DB user: $USERNAME from host: $CLIENT_HOSTNAME
 REQUEST_URL="${SERVER_URL}/client-api/users/${USERNAME}/change-password"
 log "INFO: Sending password sync request url='${REQUEST_URL}' host='${CLIENT_HOSTNAME}' client_secret_set=$([ -n "$CLIENT_SECRET" ] && echo yes || echo no)"
 
+# Construir JSON de forma segura para soportar contraseñas con comillas,
+# backslashes y otros caracteres especiales.
+JSON_PAYLOAD=$(python3 - <<'PYTHON_EOF'
+import json
+import os
+
+print(json.dumps({"new_password": os.environ.get("NEW_PASSWORD", "")}))
+PYTHON_EOF
+)
+
 # Enviar al servidor central con trazas de red/HTTP
 TMP_BODY_FILE=$(mktemp)
 TMP_ERR_FILE=$(mktemp)
@@ -85,7 +101,7 @@ HTTP_CODE=$(curl -sS -m 15 -o "$TMP_BODY_FILE" -w "%{http_code}" -X POST "$REQUE
   -H "Content-Type: application/json" \
   -H "X-Client-Host: ${CLIENT_HOSTNAME}" \
   -H "X-Client-Secret: ${CLIENT_SECRET}" \
-  -d "{\"new_password\": \"${NEW_PASSWORD}\"}" 2>"$TMP_ERR_FILE")
+  -d "$JSON_PAYLOAD" 2>"$TMP_ERR_FILE")
 CURL_EXIT=$?
 
 BODY=$(cat "$TMP_BODY_FILE")
