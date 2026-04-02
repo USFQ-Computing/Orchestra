@@ -16,6 +16,7 @@ from .execution_models import (
 )
 from .label_models import Label, LabelCreate, LabelResponse, LabelUpdate, UserLabel
 from .metric_models import Metric, MetricCreate, MetricResponse
+from .password_models import PasswordChangeFromClient
 from .server_models import Server, ServerCreate, ServerResponse
 from .user_models import User, UserCreate, UserResponse
 
@@ -40,6 +41,7 @@ __all__ = [
     "Metric",
     "MetricCreate",
     "MetricResponse",
+    "PasswordChangeFromClient",
     "Server",
     "ServerCreate",
     "ServerResponse",
