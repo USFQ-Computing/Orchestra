@@ -22,9 +22,57 @@ interface Container {
     server_ip?: string;
     image: string;
     status: string;
-    ports: string;
+    ports: string | null;
     created_at: string;
+    username?: string;
 }
+
+const getHostPortFromMapping = (ports?: string | null): string | null => {
+    if (!ports) {
+        return null;
+    }
+
+    const entries = ports
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+    for (const entry of entries) {
+        // Formato docker habitual: 0.0.0.0:4000->8080/tcp o :::4000->8080/tcp
+        const dockerArrowMatch = entry.match(/.*:(\d+)->\d+(?:\/\w+)?$/);
+        if (dockerArrowMatch) {
+            return dockerArrowMatch[1];
+        }
+
+        // Formato simple legado: 4000:8080
+        const simpleMappingMatch = entry.match(/^(\d+):\d+$/);
+        if (simpleMappingMatch) {
+            return simpleMappingMatch[1];
+        }
+
+        // Solo puerto expuesto en host: 4000
+        const rawPortMatch = entry.match(/^(\d+)$/);
+        if (rawPortMatch) {
+            return rawPortMatch[1];
+        }
+    }
+
+    return null;
+};
+
+const getSshUserForContainer = (
+    containerUsername?: string,
+    currentUsername?: string,
+): string => {
+    const preferredUser = containerUsername || currentUsername;
+    if (!preferredUser) {
+        return "<usuario>";
+    }
+
+    return preferredUser.toLowerCase() === "admin"
+        ? "<usuario>"
+        : preferredUser;
+};
 
 export default function UserContainersPage() {
     const router = useRouter();
@@ -511,19 +559,20 @@ function ContainerCard({
             return;
         }
 
-        // Extraer el puerto del host del formato "4000:8080"
-        const portMatch = container.ports.match(/^(\d+):/);
-        if (!portMatch) {
+        const hostPort = getHostPortFromMapping(container.ports);
+        if (!hostPort) {
             onShowSshDialog("", "");
             return;
         }
 
-        const hostPort = portMatch[1];
         const localPort = hostPort; // Usar el mismo puerto localmente
 
-        // Construir el comando SSH con port forwarding usando el nombre de usuario actual
-        const username = currentUsername || "root";
-        const command = `ssh -L ${localPort}:localhost:${localPort} ${username}@${container.server_ip}`;
+        // Usar owner del contenedor; si es admin fallback mostrar placeholder.
+        const sshUser = getSshUserForContainer(
+            container.username,
+            currentUsername,
+        );
+        const command = `ssh -N -L 127.0.0.1:${localPort}:127.0.0.1:${localPort} ${sshUser}@${container.server_ip}`;
 
         onShowSshDialog(command, localPort);
     };
@@ -593,6 +642,21 @@ function ContainerCard({
                     <span className="text-muted">
                         Puertos: {container.ports || "N/A"}
                     </span>
+                </div>
+                <div className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                    <div className="text-xs text-muted mb-1">
+                        SSH Port Forwarding
+                    </div>
+                    {container.server_ip &&
+                    getHostPortFromMapping(container.ports) ? (
+                        <div className="font-mono text-xs break-all text-primary">
+                            {`ssh -N -L 127.0.0.1:${getHostPortFromMapping(container.ports)}:127.0.0.1:${getHostPortFromMapping(container.ports)} ${getSshUserForContainer(container.username, currentUsername)}@${container.server_ip}`}
+                        </div>
+                    ) : (
+                        <div className="text-xs text-muted">
+                            No hay puertos publicados para generar comando
+                        </div>
+                    )}
                 </div>
             </div>
 

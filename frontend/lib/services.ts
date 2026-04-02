@@ -49,6 +49,36 @@ export interface User {
     created_at: string;
 }
 
+export type BulkUserOperation =
+    | "set_active"
+    | "set_admin"
+    | "expire_password"
+    | "add_labels"
+    | "remove_labels"
+    | "replace_labels";
+
+export interface BulkUsersRequest {
+    user_ids: number[];
+    operation: BulkUserOperation;
+    data?: Record<string, any>;
+}
+
+export interface BulkUsersResult {
+    operation: BulkUserOperation;
+    requested: number;
+    success?: number;
+    updated?: number;
+    failed?: number;
+    to_change?: number;
+    synced_to_clients?: boolean;
+    results: Array<{
+        user_id: number;
+        status: string;
+        message: string;
+        changed?: boolean;
+    }>;
+}
+
 // Servidores
 export const serversService = {
     async getAll() {
@@ -286,6 +316,22 @@ export const usersService = {
         return response.data;
     },
 
+    async bulkPreview(payload: BulkUsersRequest) {
+        const response = await api.post<BulkUsersResult>(
+            "/users/bulk/preview",
+            payload,
+        );
+        return response.data;
+    },
+
+    async bulkApply(payload: BulkUsersRequest) {
+        const response = await api.post<BulkUsersResult>(
+            "/users/bulk/apply",
+            payload,
+        );
+        return response.data;
+    },
+
     async update(id: number, data: Partial<User>) {
         const response = await api.patch<User>(`/users/${id}`, data);
         return response.data;
@@ -336,6 +382,90 @@ export const usersService = {
 
     async countAdmin() {
         const response = await api.get<{ count: number }>("/users/count/admin");
+        return response.data;
+    },
+};
+
+// Labels (User grouping/categorization)
+export interface Label {
+    id: number;
+    name: string;
+    slug: string;
+    color: string | null;
+    active: boolean;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface LabelCreate {
+    name: string;
+    slug: string;
+    color?: string | null;
+    active?: boolean;
+}
+
+export interface LabelUpdate {
+    name?: string;
+    slug?: string;
+    color?: string | null;
+    active?: boolean;
+}
+
+export const labelsService = {
+    async getAll(activeOnly: boolean = false) {
+        const response = await api.get<Label[]>("/admin/labels", {
+            params: { active_only: activeOnly },
+        });
+        return response.data;
+    },
+
+    async getById(id: number) {
+        const response = await api.get<Label>(`/admin/labels/${id}`);
+        return response.data;
+    },
+
+    async getBySlug(slug: string) {
+        const response = await api.get<Label>(`/admin/labels/slug/${slug}`);
+        return response.data;
+    },
+
+    async create(data: LabelCreate) {
+        const response = await api.post<Label>("/admin/labels", data);
+        return response.data;
+    },
+
+    async update(id: number, data: LabelUpdate) {
+        const response = await api.patch<Label>(`/admin/labels/${id}`, data);
+        return response.data;
+    },
+
+    async delete(id: number) {
+        await api.delete(`/admin/labels/${id}`);
+    },
+
+    async getUserLabels(userId: number) {
+        const response = await api.get<Label[]>(
+            `/admin/labels/user/${userId}/labels`,
+        );
+        return response.data;
+    },
+
+    async setUserLabels(userId: number, labelIds: number[]) {
+        await api.put(`/admin/labels/user/${userId}/labels`, labelIds);
+    },
+
+    async addLabelToUser(userId: number, labelId: number) {
+        await api.post(`/admin/labels/user/${userId}/labels/${labelId}`);
+    },
+
+    async removeLabelFromUser(userId: number, labelId: number) {
+        await api.delete(`/admin/labels/user/${userId}/labels/${labelId}`);
+    },
+
+    async getLabelUsers(labelId: number) {
+        const response = await api.get<
+            Array<{ id: number; username: string; email: string }>
+        >(`/admin/labels/${labelId}/users`);
         return response.data;
     },
 };

@@ -153,8 +153,28 @@ source /etc/default/sssd-pgsql 2>/dev/null || exit 1
 
 TEMP_FILE="/var/lib/extrausers/shadow.tmp"
 TARGET_FILE="/var/lib/extrausers/shadow"
+TARGET_DIR="/var/lib/extrausers"
 
-mkdir -p /var/lib/extrausers
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
+}
+
+# This script usually runs as root, but some PAM flows can execute it
+# without enough privileges. In that case, skip gracefully.
+if [ ! -d "$TARGET_DIR" ] && ! mkdir -p "$TARGET_DIR" 2>/dev/null; then
+  log "WARN: Cannot create $TARGET_DIR (insufficient permissions). Skipping shadow regeneration."
+  exit 0
+fi
+
+if [ ! -w "$TARGET_DIR" ]; then
+  log "WARN: No write permission on $TARGET_DIR. Skipping shadow regeneration."
+  exit 0
+fi
+
+if [ -e "$TARGET_FILE" ] && [ ! -r "$TARGET_FILE" ]; then
+  log "WARN: Cannot read $TARGET_FILE. Skipping shadow regeneration."
+  exit 0
+fi
 
 DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
   -h "${DB_HOST}" \
@@ -171,13 +191,14 @@ DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
    ORDER BY system_uid" 2>/dev/null)
 
 if [ $? -ne 0 ]; then
-  echo "Error: PostgreSQL query failed" >&2
+  log "ERROR: PostgreSQL query failed"
   exit 1
 fi
 
 if [ -z "$DB_ROWS" ]; then
+  log "WARN: No active users found, creating empty shadow file"
   touch "$TARGET_FILE"
-  chmod 640 "$TARGET_FILE"
+  chmod 640 "$TARGET_FILE" || log "WARN: Could not set permissions on $TARGET_FILE"
   chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null
   exit 0
 fi
@@ -187,7 +208,7 @@ fi
 while IFS=$'\t' read -r USERNAME SP_LSTCHG SP_MAX; do
   [ -z "$USERNAME" ] && continue
   EXISTING_HASH=""
-  if [ -f "$TARGET_FILE" ]; then
+  if [ -r "$TARGET_FILE" ]; then
     EXISTING_HASH=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' "$TARGET_FILE")
   fi
   case "$EXISTING_HASH" in
@@ -202,8 +223,9 @@ while IFS=$'\t' read -r USERNAME SP_LSTCHG SP_MAX; do
 done <<< "$DB_ROWS"
 
 mv "$TEMP_FILE" "$TARGET_FILE"
-chmod 640 "$TARGET_FILE"
-chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null
+chmod 640 "$TARGET_FILE" || log "WARN: Could not set permissions on $TARGET_FILE"
+chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null || log "WARN: Could not set ownership on $TARGET_FILE"
+log "INFO: Successfully generated $TARGET_FILE"
 SCRIPT_EOF
 
 chmod +x /usr/local/bin/generate_shadow_from_db.sh

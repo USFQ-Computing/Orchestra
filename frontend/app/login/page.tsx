@@ -200,7 +200,7 @@ export default function LoginPage() {
 
                 {/* Footer */}
                 <div className="text-center mt-6 text-sm text-muted">
-                    <p>© 2025 Sistema PP. Todos los derechos reservados.</p>
+                    <p>© 2025 Orchestra. Todos los derechos reservados.</p>
                 </div>
             </div>
         </div>

@@ -24,17 +24,72 @@ interface Container {
     username?: string;
     server_id: number;
     server_name: string;
+    server_ip?: string | null;
     image: string;
-    ports: string;
+    ports: string | null;
     status: string;
     is_public: boolean;
     container_id: string | null;
     created_at: string;
 }
 
+const getHostPortFromMapping = (ports?: string | null): string | null => {
+    if (!ports) {
+        return null;
+    }
+
+    const entries = ports
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+    for (const entry of entries) {
+        // Formato docker habitual: 0.0.0.0:4000->8080/tcp o :::4000->8080/tcp
+        const dockerArrowMatch = entry.match(/.*:(\d+)->\d+(?:\/\w+)?$/);
+        if (dockerArrowMatch) {
+            return dockerArrowMatch[1];
+        }
+
+        // Formato simple legado: 4000:8080
+        const simpleMappingMatch = entry.match(/^(\d+):\d+$/);
+        if (simpleMappingMatch) {
+            return simpleMappingMatch[1];
+        }
+
+        // Solo puerto expuesto en host: 4000
+        const rawPortMatch = entry.match(/^(\d+)$/);
+        if (rawPortMatch) {
+            return rawPortMatch[1];
+        }
+    }
+
+    return null;
+};
+
+const getSshUserForContainer = (username?: string): string => {
+    if (!username) {
+        return "<usuario>";
+    }
+
+    return username.toLowerCase() === "admin" ? "<usuario>" : username;
+};
+
+const buildSshForwardCommand = (container: Container): string | null => {
+    const hostPort = getHostPortFromMapping(container.ports);
+    const serverIp = container.server_ip;
+
+    if (!hostPort || !serverIp) {
+        return null;
+    }
+
+    const sshUser = getSshUserForContainer(container.username);
+    return `ssh -N -L 127.0.0.1:${hostPort}:127.0.0.1:${hostPort} ${sshUser}@${serverIp}`;
+};
+
 interface Server {
     id: number;
     name: string;
+    ip_address?: string;
 }
 
 export default function AllContainersPage() {
@@ -55,6 +110,30 @@ export default function AllContainersPage() {
     const [containerNameSearch, setContainerNameSearch] = useState<string>("");
     const [showFilters, setShowFilters] = useState(false);
     const [showCreateModal, setShowCreateModal] = useState(false);
+
+    const copyTextToClipboard = async (text: string): Promise<boolean> => {
+        if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+
+        if (typeof document === "undefined") {
+            return false;
+        }
+
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.setAttribute("readonly", "");
+        textArea.style.position = "absolute";
+        textArea.style.left = "-9999px";
+
+        document.body.appendChild(textArea);
+        textArea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textArea);
+
+        return copied;
+    };
 
     useEffect(() => {
         checkAuth();
@@ -301,6 +380,28 @@ export default function AllContainersPage() {
             toast.error(
                 `❌ Error al actualizar estado desde todos los servidores: ${errorMessage}`,
             );
+        }
+    };
+
+    const handleCopySshCommand = async (container: Container) => {
+        const command = buildSshForwardCommand(container);
+        if (!command) {
+            toast.error(
+                "No se pudo generar el comando SSH (falta IP o puertos publicados)",
+            );
+            return;
+        }
+
+        try {
+            const copied = await copyTextToClipboard(command);
+            if (copied) {
+                toast.success("Comando SSH copiado");
+            } else {
+                toast.error("No se pudo copiar el comando SSH");
+            }
+        } catch (err) {
+            console.error("Error copying SSH command:", err);
+            toast.error("No se pudo copiar el comando SSH");
         }
     };
 
@@ -736,10 +837,11 @@ export default function AllContainersPage() {
                                                 </span>
                                                 <div className="flex-1 min-w-0">
                                                     <div className="text-xs text-muted">
-                                                        Servidor
+                                                        IP del servidor
                                                     </div>
                                                     <div className="font-medium text-sm truncate">
-                                                        {container.server_name}
+                                                        {container.server_ip ||
+                                                            "IP no disponible"}
                                                     </div>
                                                 </div>
                                             </div>
@@ -806,6 +908,44 @@ export default function AllContainersPage() {
                                                         </>
                                                     )}
                                                 </div>
+                                            </div>
+
+                                            {/* SSH Port Forwarding */}
+                                            <div className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                                                <div className="text-xs text-muted mb-1">
+                                                    SSH Port Forwarding
+                                                </div>
+                                                {buildSshForwardCommand(
+                                                    container,
+                                                ) ? (
+                                                    <div className="space-y-2">
+                                                        <div className="font-mono text-xs break-all text-primary">
+                                                            {buildSshForwardCommand(
+                                                                container,
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={() => {
+                                                                void handleCopySshCommand(
+                                                                    container,
+                                                                );
+                                                            }}
+                                                            className={cn(
+                                                                getButtonClass(
+                                                                    "secondary",
+                                                                ),
+                                                                "text-xs",
+                                                            )}
+                                                        >
+                                                            Copiar comando SSH
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-xs text-muted">
+                                                        No hay puertos publicados
+                                                        para generar comando
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 

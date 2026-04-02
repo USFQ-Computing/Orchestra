@@ -1,10 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { usersService, User } from "@/lib/services";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    BulkUserOperation,
+    BulkUsersRequest,
+    BulkUsersResult,
+    Label,
+    labelsService,
+    usersService,
+    User,
+} from "@/lib/services";
 import ProtectedRoute from "@/app/components/ProtectedRoute";
+import UserLabelsModal from "@/app/components/UserLabelsModal";
+import UserLabelsBadges from "@/app/components/UserLabelsBadges";
 import { authService } from "@/lib/api";
 import { useRouter } from "next/navigation";
+
+const getContrastTextColor = (backgroundColor: string | null) => {
+    if (!backgroundColor || !backgroundColor.startsWith("#")) {
+        return "#ffffff";
+    }
+
+    const hex = backgroundColor.slice(1);
+    const normalizedHex =
+        hex.length === 3
+            ? hex
+                  .split("")
+                  .map((char) => char + char)
+                  .join("")
+            : hex;
+
+    if (normalizedHex.length !== 6) {
+        return "#ffffff";
+    }
+
+    const r = parseInt(normalizedHex.slice(0, 2), 16);
+    const g = parseInt(normalizedHex.slice(2, 4), 16);
+    const b = parseInt(normalizedHex.slice(4, 6), 16);
+
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.6 ? "#111827" : "#ffffff";
+};
 
 export default function UsersPage() {
     const router = useRouter();
@@ -34,6 +70,30 @@ export default function UsersPage() {
     const [bulkFile, setBulkFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const [bulkResult, setBulkResult] = useState<any>(null);
+    const [showLabelsModal, setShowLabelsModal] = useState(false);
+    const [selectedUserForLabels, setSelectedUserForLabels] =
+        useState<User | null>(null);
+    const [labelsRefreshKey, setLabelsRefreshKey] = useState(0);
+    const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+    const [availableLabels, setAvailableLabels] = useState<Label[]>([]);
+    const [bulkAction, setBulkAction] = useState<BulkUserOperation>("set_active");
+    const [bulkToggleValue, setBulkToggleValue] = useState<0 | 1>(1);
+    const [bulkLabelIds, setBulkLabelIds] = useState<number[]>([]);
+    const [bulkApplying, setBulkApplying] = useState(false);
+    const [showBulkPreviewModal, setShowBulkPreviewModal] = useState(false);
+    const [bulkPreview, setBulkPreview] = useState<BulkUsersResult | null>(null);
+    const [pendingBulkPayload, setPendingBulkPayload] = useState<BulkUsersRequest | null>(null);
+    const [bulkOpResult, setBulkOpResult] = useState<BulkUsersResult | null>(null);
+    const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+    const filterDropdownRef = useRef<HTMLDivElement>(null);
+    const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
+    const [adminFilter, setAdminFilter] = useState<"all" | "admin" | "non_admin">("all");
+    const [labelFilterId, setLabelFilterId] = useState<number | "all">("all");
+    const [labelFilteredUserIds, setLabelFilteredUserIds] = useState<Set<number> | null>(null);
+    const [loadingLabelFilter, setLoadingLabelFilter] = useState(false);
+    const [userLabelsCache, setUserLabelsCache] = useState<Record<number, Label[]>>({});
+    const labelFilterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const [pendingLabelFilterId, setPendingLabelFilterId] = useState<number | "all">("all");
 
     useEffect(() => {
         const verifyAuth = async () => {
@@ -63,8 +123,122 @@ export default function UsersPage() {
     useEffect(() => {
         if (currentUser && currentUser.is_admin === 1) {
             loadUsers();
+            loadLabels();
         }
     }, [currentUser]);
+
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (
+                filterDropdownRef.current &&
+                !filterDropdownRef.current.contains(event.target as Node)
+            ) {
+                setShowFilterDropdown(false);
+            }
+        };
+
+        if (showFilterDropdown) {
+            document.addEventListener("mousedown", handleClickOutside);
+            return () => {
+                document.removeEventListener("mousedown", handleClickOutside);
+            };
+        }
+    }, [showFilterDropdown]);
+
+    useEffect(() => {
+        // Debounce label filter selection to avoid rapid API calls
+        if (labelFilterTimeoutRef.current) {
+            clearTimeout(labelFilterTimeoutRef.current);
+        }
+
+        labelFilterTimeoutRef.current = setTimeout(async () => {
+            if (pendingLabelFilterId === "all") {
+                setLabelFilteredUserIds(null);
+                setLabelFilterId("all");
+                return;
+            }
+
+            setLoadingLabelFilter(true);
+            try {
+                const usersForLabel = await labelsService.getLabelUsers(
+                    pendingLabelFilterId as number,
+                );
+                setLabelFilteredUserIds(new Set(usersForLabel.map((user) => user.id)));
+                setLabelFilterId(pendingLabelFilterId);
+                setError("");
+            } catch (error: any) {
+                console.error("Error loading users for label filter:", error);
+                setLabelFilteredUserIds(null);
+                setError(
+                    error.response?.data?.detail ||
+                        "Error al cargar usuarios para la etiqueta seleccionada",
+                );
+            } finally {
+                setLoadingLabelFilter(false);
+            }
+        }, 300); // 300ms debounce
+
+        return () => {
+            if (labelFilterTimeoutRef.current) {
+                clearTimeout(labelFilterTimeoutRef.current);
+            }
+        };
+    }, [pendingLabelFilterId]);
+
+    const getCachedUserLabels = useCallback(
+        (userId: number) => {
+            return userLabelsCache[userId];
+        },
+        [userLabelsCache],
+    );
+
+    const cacheUserLabels = useCallback(
+        (userId: number, labels: Label[]) => {
+            setUserLabelsCache((prev) => ({
+                ...prev,
+                [userId]: labels,
+            }));
+        },
+        [],
+    );
+
+    const filteredUsers = useMemo(() => {
+        return users.filter((user) => {
+            const matchesActive =
+                activeFilter === "all" ||
+                (activeFilter === "active" && user.is_active === 1) ||
+                (activeFilter === "inactive" && user.is_active === 0);
+
+            const matchesAdmin =
+                adminFilter === "all" ||
+                (adminFilter === "admin" && user.is_admin === 1) ||
+                (adminFilter === "non_admin" && user.is_admin === 0);
+
+            const matchesLabel =
+                labelFilterId === "all" ||
+                                (loadingLabelFilter
+                                        ? true
+                                        : labelFilteredUserIds
+                                            ? labelFilteredUserIds.has(user.id)
+                                            : false);
+
+            return matchesActive && matchesAdmin && matchesLabel;
+        });
+    }, [users, activeFilter, adminFilter, labelFilterId, labelFilteredUserIds, loadingLabelFilter]);
+
+    useEffect(() => {
+        // Keep selection valid when filtered results change
+        setSelectedUserIds((prev) => {
+            const validIds = new Set(filteredUsers.map((u) => u.id));
+            const updated = prev.filter((id) => validIds.has(id));
+            return updated.length === prev.length ? prev : updated;
+        });
+    }, [filteredUsers]);
+
+    const activeFilterCount =
+        (activeFilter !== "all" ? 1 : 0) +
+        (adminFilter !== "all" ? 1 : 0) +
+        (labelFilterId !== "all" ? 1 : 0);
 
     const loadUsers = async () => {
         try {
@@ -79,6 +253,15 @@ export default function UsersPage() {
             );
         } finally {
             setLoading(false);
+        }
+    };
+
+    const loadLabels = async () => {
+        try {
+            const labels = await labelsService.getAll(true);
+            setAvailableLabels(labels);
+        } catch (error) {
+            console.error("Error loading labels:", error);
         }
     };
 
@@ -101,6 +284,8 @@ export default function UsersPage() {
 
     const handleOpenEditModal = (user: User) => {
         setSelectedUser(user);
+        setShowLabelsModal(false);
+        setSelectedUserForLabels(null);
         setEditFormData({
             username: user.username,
             email: user.email,
@@ -133,7 +318,9 @@ export default function UsersPage() {
             }
 
             setShowEditModal(false);
+            setShowLabelsModal(false);
             setSelectedUser(null);
+            setSelectedUserForLabels(null);
             setEditFormData({
                 username: "",
                 email: "",
@@ -247,6 +434,150 @@ export default function UsersPage() {
         }
     };
 
+    const isAllSelected = useMemo(
+        () =>
+            filteredUsers.length > 0 &&
+            filteredUsers.every((user) => selectedUserIds.includes(user.id)),
+        [filteredUsers, selectedUserIds],
+    );
+    const hasSelectedUsers = selectedUserIds.length > 0;
+
+    const toggleSelectAll = useCallback(() => {
+        setSelectedUserIds((prev) =>
+            prev.length === filteredUsers.length
+                ? []
+                : filteredUsers.map((u) => u.id),
+        );
+    }, [filteredUsers]);
+
+    const toggleUserSelection = useCallback((userId: number) => {
+        setSelectedUserIds((prev) =>
+            prev.includes(userId)
+                ? prev.filter((id) => id !== userId)
+                : [...prev, userId],
+        );
+    }, []);
+
+    const clearBulkSelection = () => {
+        setSelectedUserIds([]);
+        setBulkLabelIds([]);
+        setBulkPreview(null);
+        setPendingBulkPayload(null);
+    };
+
+    const clearFilters = useCallback(() => {
+        setActiveFilter("all");
+        setAdminFilter("all");
+        setLabelFilterId("all");
+        setShowFilterDropdown(false);
+    }, []);
+
+    const getActiveFilterLabel = (filter: string) => {
+        const labels: Record<string, string> = {
+            active: "✓ Activos",
+            inactive: "✗ Inactivos",
+            admin: "👑 Admins",
+            non_admin: "👤 Usuarios",
+        };
+        return labels[filter];
+    };
+
+    const selectedLabelName = useMemo(
+        () =>
+            labelFilterId !== "all"
+                ? availableLabels.find((l) => l.id === labelFilterId)?.name
+                : null,
+        [labelFilterId, availableLabels],
+    );
+
+    const toggleBulkLabelSelection = (labelId: number) => {
+        setBulkLabelIds((prev) =>
+            prev.includes(labelId)
+                ? prev.filter((id) => id !== labelId)
+                : [...prev, labelId],
+        );
+    };
+
+    const getBulkPayloadData = () => {
+        if (bulkAction === "set_active") {
+            return { is_active: bulkToggleValue };
+        }
+        if (bulkAction === "set_admin") {
+            return { is_admin: bulkToggleValue };
+        }
+        if (
+            bulkAction === "add_labels" ||
+            bulkAction === "remove_labels" ||
+            bulkAction === "replace_labels"
+        ) {
+            return { label_ids: bulkLabelIds };
+        }
+        return {};
+    };
+
+    const handleApplyBulk = async () => {
+        if (selectedUserIds.length === 0) {
+            setError("Selecciona al menos un usuario");
+            return;
+        }
+
+        if (
+            (bulkAction === "add_labels" ||
+                bulkAction === "remove_labels" ||
+                bulkAction === "replace_labels") &&
+            bulkLabelIds.length === 0
+        ) {
+            setError("Selecciona al menos una etiqueta para esa operación");
+            return;
+        }
+
+        const payload: BulkUsersRequest = {
+            user_ids: selectedUserIds,
+            operation: bulkAction,
+            data: getBulkPayloadData(),
+        };
+
+        setBulkApplying(true);
+        try {
+            const preview = await usersService.bulkPreview(payload);
+            setBulkPreview(preview);
+            setPendingBulkPayload(payload);
+            setShowBulkPreviewModal(true);
+            setError("");
+        } catch (error: any) {
+            console.error("Error applying bulk operation:", error);
+            setError(
+                error.response?.data?.detail ||
+                    "Error al aplicar la operación masiva",
+            );
+        } finally {
+            setBulkApplying(false);
+        }
+    };
+
+    const handleConfirmBulkApply = async () => {
+        if (!pendingBulkPayload) return;
+
+        setBulkApplying(true);
+        try {
+            const result = await usersService.bulkApply(pendingBulkPayload);
+            await loadUsers();
+            setLabelsRefreshKey((prev) => prev + 1);
+            setBulkOpResult(result);
+            setShowBulkPreviewModal(false);
+            clearBulkSelection();
+            setError("");
+        } catch (error: any) {
+            console.error("Error confirming bulk operation:", error);
+            setError(
+                error.response?.data?.detail ||
+                    "Error al confirmar la operación masiva",
+            );
+        } finally {
+            setBulkApplying(false);
+        }
+    };
+
     if (authLoading || loading) {
         return (
             <div className="loading-container">
@@ -278,6 +609,165 @@ export default function UsersPage() {
                         </p>
                     </div>
                     <div className="action-buttons">
+                        <div className="relative" ref={filterDropdownRef}>
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setShowFilterDropdown((prev) => !prev)
+                                }
+                                className={`btn flex items-center space-x-2 transition-all ${
+                                    showFilterDropdown || activeFilterCount > 0
+                                        ? "btn-primary"
+                                        : "btn-secondary"
+                                }`}
+                            >
+                                <svg
+                                    className={`icon-md transition-transform ${
+                                        showFilterDropdown ? "rotate-180" : ""
+                                    }`}
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        strokeWidth={2}
+                                        d="M3 4a1 1 0 011-1h16a1 1 0 01.8 1.6L14 13.5V19a1 1 0 01-1.447.894l-2-1A1 1 0 0110 18v-4.5L3.2 4.6A1 1 0 013 4z"
+                                    />
+                                </svg>
+                                <span>Filtros</span>
+                                {activeFilterCount > 0 && (
+                                    <span className="badge badge-success text-xs font-semibold">
+                                        {activeFilterCount}
+                                    </span>
+                                )}
+                            </button>
+
+                            {showFilterDropdown && (
+                                <div className="absolute right-0 mt-2 w-96 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-30 p-5 space-y-4 animate-in fade-in duration-200">
+                                    <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 pb-3">
+                                        <h3 className="font-semibold text-sm">Filtrar usuarios</h3>
+                                        {activeFilterCount > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={clearFilters}
+                                                className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors"
+                                            >
+                                                ✕ Limpiar todo
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-3">
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <label className="label mb-0">Estado</label>
+                                                {activeFilter !== "all" && (
+                                                    <span className="badge badge-success text-xs">
+                                                        {getActiveFilterLabel(activeFilter)}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <select
+                                                value={activeFilter}
+                                                onChange={(e) =>
+                                                    setActiveFilter(
+                                                        e.target
+                                                            .value as "all" | "active" | "inactive",
+                                                    )
+                                                }
+                                                className="input text-sm"
+                                            >
+                                                <option value="all">Todos los estados</option>
+                                                <option value="active">✓ Activos</option>
+                                                <option value="inactive">✗ Inactivos</option>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <label className="label mb-0">Rol</label>
+                                                {adminFilter !== "all" && (
+                                                    <span className="badge badge-success text-xs">
+                                                        {getActiveFilterLabel(adminFilter)}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <select
+                                                value={adminFilter}
+                                                onChange={(e) =>
+                                                    setAdminFilter(
+                                                        e.target
+                                                            .value as "all" | "admin" | "non_admin",
+                                                    )
+                                                }
+                                                className="input text-sm"
+                                            >
+                                                <option value="all">Todos los roles</option>
+                                                <option value="admin">👑 Solo administradores</option>
+                                                <option value="non_admin">👤 Solo usuarios</option>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <label className="label mb-0">Etiqueta</label>
+                                                {labelFilterId !== "all" && selectedLabelName && (
+                                                    <span
+                                                        className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full"
+                                                        style={{
+                                                            backgroundColor:
+                                                                availableLabels.find(
+                                                                    (l) => l.id === labelFilterId,
+                                                                )?.color || "#6B7280",
+                                                            color: getContrastTextColor(
+                                                                availableLabels.find(
+                                                                    (l) => l.id === labelFilterId,
+                                                                )?.color || null,
+                                                            ),
+                                                        }}
+                                                    >
+                                                        {selectedLabelName}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <select
+                                                value={pendingLabelFilterId}
+                                                onChange={(e) => {
+                                                    const value = e.target.value;
+                                                    setPendingLabelFilterId(
+                                                        value === "all"
+                                                            ? "all"
+                                                            : Number(value),
+                                                    );
+                                                }}
+                                                className="input text-sm"
+                                            >
+                                                <option value="all">Todas las etiquetas</option>
+                                                {availableLabels.map((label) => (
+                                                    <option key={label.id} value={label.id}>
+                                                        {label.name}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {loadingLabelFilter && (
+                                                <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 animate-pulse">
+                                                    ⏳ Cargando usuarios para la etiqueta...
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t border-gray-200 dark:border-gray-700 pt-3 mt-3">
+                                        <p className="text-xs text-gray-600 dark:text-gray-400">
+                                            Mostrando <strong>{filteredUsers.length}</strong> de <strong>{users.length}</strong> usuarios
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
                         <button
                             onClick={() => setShowBulkUploadModal(true)}
                             className="btn btn-secondary flex items-center space-x-2"
@@ -341,8 +831,197 @@ export default function UsersPage() {
                     </div>
                 )}
 
+                {/* Bulk operation result */}
+                {bulkOpResult && (
+                    <div className="alert alert-success mb-6">
+                        <div className="w-full">
+                            <p className="font-semibold">Operación masiva completada</p>
+                            <p className="text-sm mt-1">
+                                Solicitados: {bulkOpResult.requested} | Actualizados: {bulkOpResult.updated || 0} | Fallidos: {bulkOpResult.failed || 0}
+                            </p>
+                        </div>
+                        <button onClick={() => setBulkOpResult(null)}>
+                            <svg
+                                className="icon-md"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                            >
+                                <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M6 18L18 6M6 6l12 12"
+                                />
+                            </svg>
+                        </button>
+                    </div>
+                )}
+
+                {filteredUsers.length > 0 && hasSelectedUsers && (
+                    <div className="card mb-6">
+                        <div className="card-body py-4">
+                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <p className="text-sm text-muted">
+                                        Seleccionados: <strong>{selectedUserIds.length}</strong> de {filteredUsers.length}
+                                    </p>
+                                    <p className="text-xs text-muted mt-1">
+                                        Usa esta barra para aplicar cambios a varios usuarios al mismo tiempo.
+                                    </p>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 w-full lg:w-auto">
+                                    <div>
+                                        <label className="label">Operación</label>
+                                        <select
+                                            value={bulkAction}
+                                            onChange={(e) =>
+                                                setBulkAction(
+                                                    e.target.value as BulkUserOperation,
+                                                )
+                                            }
+                                            className="input"
+                                        >
+                                            <option value="set_active">Cambiar estado (activo/inactivo)</option>
+                                            <option value="set_admin">Cambiar rol (admin/usuario)</option>
+                                            <option value="expire_password">Expirar contraseña</option>
+                                            <option value="add_labels">Agregar etiquetas</option>
+                                            <option value="remove_labels">Quitar etiquetas</option>
+                                            <option value="replace_labels">Reemplazar etiquetas</option>
+                                        </select>
+                                    </div>
+
+                                    {(bulkAction === "set_active" ||
+                                        bulkAction === "set_admin") && (
+                                        <div>
+                                            <label className="label">Valor</label>
+                                            <select
+                                                value={bulkToggleValue}
+                                                onChange={(e) =>
+                                                    setBulkToggleValue(
+                                                        Number(e.target.value) as 0 | 1,
+                                                    )
+                                                }
+                                                className="input"
+                                            >
+                                                <option value={1}>Sí</option>
+                                                <option value={0}>No</option>
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    {(bulkAction === "add_labels" ||
+                                        bulkAction === "remove_labels" ||
+                                        bulkAction === "replace_labels") && (
+                                        <div className="md:col-span-2 lg:col-span-2">
+                                            <label className="label">Etiquetas</label>
+                                            <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/30 p-3 max-h-[180px] overflow-y-auto space-y-2">
+                                                {availableLabels.length === 0 ? (
+                                                    <p className="text-sm text-muted">
+                                                        No hay etiquetas activas disponibles.
+                                                    </p>
+                                                ) : (
+                                                    availableLabels.map((label) => {
+                                                        const isSelected = bulkLabelIds.includes(
+                                                            label.id,
+                                                        );
+                                                        return (
+                                                            <label
+                                                                key={label.id}
+                                                                className="flex items-center justify-between gap-3 p-2 rounded-md cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
+                                                            >
+                                                                <div className="flex items-center gap-2 min-w-0">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={isSelected}
+                                                                        onChange={() =>
+                                                                            toggleBulkLabelSelection(
+                                                                                label.id,
+                                                                            )
+                                                                        }
+                                                                        className="checkbox"
+                                                                    />
+                                                                    <span
+                                                                        className="inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full"
+                                                                        style={{
+                                                                            backgroundColor:
+                                                                                label.color ||
+                                                                                "#6B7280",
+                                                                            color: getContrastTextColor(
+                                                                                label.color,
+                                                                            ),
+                                                                        }}
+                                                                    >
+                                                                        {label.name}
+                                                                    </span>
+                                                                </div>
+                                                                <span className="text-xs text-muted truncate">
+                                                                    {label.slug}
+                                                                </span>
+                                                            </label>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                            <div className="mt-2 flex items-center justify-between">
+                                                <p className="text-xs text-muted">
+                                                    {bulkLabelIds.length} etiqueta(s) seleccionada(s)
+                                                </p>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setBulkLabelIds(
+                                                                availableLabels.map(
+                                                                    (label) => label.id,
+                                                                ),
+                                                            )
+                                                        }
+                                                        className="text-xs text-primary-600 dark:text-primary-400 hover:underline"
+                                                    >
+                                                        Seleccionar todas
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setBulkLabelIds([])
+                                                        }
+                                                        className="text-xs text-muted hover:underline"
+                                                    >
+                                                        Limpiar
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="flex items-end gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={handleApplyBulk}
+                                            disabled={!hasSelectedUsers || bulkApplying}
+                                            className="btn btn-primary"
+                                        >
+                                            {bulkApplying ? "Aplicando..." : "Aplicar a Seleccionados"}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={clearBulkSelection}
+                                            disabled={!hasSelectedUsers || bulkApplying}
+                                            className="btn btn-secondary"
+                                        >
+                                            Limpiar
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Users Table */}
-                {users.length === 0 ? (
+                {filteredUsers.length === 0 ? (
                     <div className="empty-state">
                         <svg
                             className="empty-state-icon text-gray-400 dark:text-gray-600"
@@ -357,16 +1036,33 @@ export default function UsersPage() {
                                 d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
                             />
                         </svg>
-                        <h3 className="empty-state-title">No hay usuarios</h3>
-                        <p className="empty-state-description">
-                            Crea el primer usuario del sistema
-                        </p>
-                        <button
-                            onClick={() => setShowCreateModal(true)}
-                            className="btn btn-primary"
-                        >
-                            Crear Usuario
-                        </button>
+                        {users.length === 0 ? (
+                            <>
+                                <h3 className="empty-state-title">No hay usuarios</h3>
+                                <p className="empty-state-description">
+                                    Crea el primer usuario del sistema
+                                </p>
+                                <button
+                                    onClick={() => setShowCreateModal(true)}
+                                    className="btn btn-primary"
+                                >
+                                    Crear Usuario
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <h3 className="empty-state-title">Sin resultados</h3>
+                                <p className="empty-state-description">
+                                    No hay usuarios que coincidan con los filtros seleccionados.
+                                </p>
+                                <button
+                                    onClick={clearFilters}
+                                    className="btn btn-secondary"
+                                >
+                                    Limpiar filtros
+                                </button>
+                            </>
+                        )}
                     </div>
                 ) : (
                     <div className="card p-0">
@@ -375,16 +1071,18 @@ export default function UsersPage() {
                                 <thead className="table-header">
                                     <tr>
                                         <th className="table-header-cell">
-                                            ID
+                                            <input
+                                                type="checkbox"
+                                                checked={isAllSelected}
+                                                onChange={toggleSelectAll}
+                                                className="checkbox"
+                                            />
                                         </th>
                                         <th className="table-header-cell">
                                             Username
                                         </th>
                                         <th className="table-header-cell">
-                                            Email
-                                        </th>
-                                        <th className="table-header-cell">
-                                            System UID
+                                            Etiquetas
                                         </th>
                                         <th className="table-header-cell">
                                             Admin
@@ -401,19 +1099,33 @@ export default function UsersPage() {
                                     </tr>
                                 </thead>
                                 <tbody className="table-body">
-                                    {users.map((user) => (
+                                    {filteredUsers.map((user) => (
                                         <tr key={user.id} className="table-row">
-                                            <td className="table-cell font-medium">
-                                                #{user.id}
+                                            <td className="table-cell">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedUserIds.includes(user.id)}
+                                                    onChange={() => toggleUserSelection(user.id)}
+                                                    className="checkbox"
+                                                />
                                             </td>
                                             <td className="table-cell font-medium">
                                                 {user.username}
                                             </td>
-                                            <td className="table-cell text-muted">
-                                                {user.email}
-                                            </td>
-                                            <td className="table-cell text-muted code-inline">
-                                                {user.system_uid}
+                                            <td className="table-cell">
+                                                <UserLabelsBadges
+                                                    key={user.id}
+                                                    userId={user.id}
+                                                    maxShow={2}
+                                                    clickable={true}
+                                                    onClick={() =>
+                                                        handleOpenEditModal(user)
+                                                    }
+                                                    cachedLabels={getCachedUserLabels(user.id)}
+                                                    onLabelsLoaded={(labels) =>
+                                                        cacheUserLabels(user.id, labels)
+                                                    }
+                                                />
                                             </td>
                                             <td className="table-cell">
                                                 <button
@@ -499,6 +1211,121 @@ export default function UsersPage() {
                 )}
 
                 {/* Edit User Modal */}
+                {showBulkPreviewModal && bulkPreview && (
+                    <div className="modal-overlay">
+                        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                            <div className="p-6">
+                                <div className="modal-header">
+                                    <h2 className="modal-title">Previsualización de operación masiva</h2>
+                                    <button
+                                        onClick={() => {
+                                            setShowBulkPreviewModal(false);
+                                            setBulkPreview(null);
+                                            setPendingBulkPayload(null);
+                                        }}
+                                        className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                                    >
+                                        <svg
+                                            className="w-6 h-6"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            viewBox="0 0 24 24"
+                                        >
+                                            <path
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                strokeWidth={2}
+                                                d="M6 18L18 6M6 6l12 12"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+                                    <div className="card-body bg-gray-100 dark:bg-gray-700/40 rounded-lg py-3">
+                                        <p className="text-xs text-muted">Operación</p>
+                                        <p className="font-semibold">{bulkPreview.operation}</p>
+                                    </div>
+                                    <div className="card-body bg-gray-100 dark:bg-gray-700/40 rounded-lg py-3">
+                                        <p className="text-xs text-muted">Solicitados</p>
+                                        <p className="font-semibold">{bulkPreview.requested}</p>
+                                    </div>
+                                    <div className="card-body bg-green-100 dark:bg-green-900/20 rounded-lg py-3">
+                                        <p className="text-xs text-muted">Cambios detectados</p>
+                                        <p className="font-semibold">{bulkPreview.to_change || 0}</p>
+                                    </div>
+                                    <div className="card-body bg-amber-100 dark:bg-amber-900/20 rounded-lg py-3">
+                                        <p className="text-xs text-muted">Sin cambios</p>
+                                        <p className="font-semibold">
+                                            {bulkPreview.results.filter((r) => r.status === "noop").length}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                                    <table className="table">
+                                        <thead className="table-header">
+                                            <tr>
+                                                <th className="table-header-cell">Usuario</th>
+                                                <th className="table-header-cell">Estado</th>
+                                                <th className="table-header-cell">Detalle</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="table-body">
+                                            {bulkPreview.results.map((item) => {
+                                                const user = users.find((u) => u.id === item.user_id);
+                                                return (
+                                                    <tr key={`${item.user_id}-${item.status}`} className="table-row">
+                                                        <td className="table-cell">
+                                                            <div className="font-medium">{user?.username || `#${item.user_id}`}</div>
+                                                            {user?.email && (
+                                                                <div className="text-xs text-muted">{user.email}</div>
+                                                            )}
+                                                        </td>
+                                                        <td className="table-cell">
+                                                            <span
+                                                                className={`badge ${
+                                                                    item.status === "change"
+                                                                        ? "badge-success"
+                                                                        : item.status === "noop"
+                                                                          ? "badge-neutral"
+                                                                          : "badge-error"
+                                                                }`}
+                                                            >
+                                                                {item.status}
+                                                            </span>
+                                                        </td>
+                                                        <td className="table-cell text-muted">{item.message}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div className="modal-footer mt-4">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowBulkPreviewModal(false)}
+                                        className="btn btn-secondary"
+                                        disabled={bulkApplying}
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleConfirmBulkApply}
+                                        className="btn btn-primary"
+                                        disabled={bulkApplying || (bulkPreview.to_change || 0) === 0}
+                                    >
+                                        {bulkApplying ? "Aplicando..." : "Confirmar y aplicar"}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {showEditModal && selectedUser && (
                     <div className="modal-overlay">
                         <div className="modal-content">
@@ -612,12 +1439,37 @@ export default function UsersPage() {
                                     </div>
                                 </div>
 
+                                <div className="form-group">
+                                    <label className="label">Etiquetas</label>
+                                    <div className="flex items-center justify-between gap-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg">
+                                        <UserLabelsBadges
+                                            key={`${selectedUser.id}-${labelsRefreshKey}`}
+                                            userId={selectedUser.id}
+                                            maxShow={3}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedUserForLabels(
+                                                    selectedUser,
+                                                );
+                                                setShowLabelsModal(true);
+                                            }}
+                                            className="btn btn-secondary whitespace-nowrap"
+                                        >
+                                            Editar etiquetas
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div className="modal-footer">
                                     <button
                                         type="button"
                                         onClick={() => {
                                             setShowEditModal(false);
+                                            setShowLabelsModal(false);
                                             setSelectedUser(null);
+                                            setSelectedUserForLabels(null);
                                         }}
                                         className="btn btn-secondary"
                                         disabled={updating}
@@ -1024,6 +1876,18 @@ export default function UsersPage() {
                     </div>
                 )}
             </div>
+
+            <UserLabelsModal
+                isOpen={showLabelsModal}
+                user={selectedUserForLabels}
+                onClose={() => {
+                    setShowLabelsModal(false);
+                    setSelectedUserForLabels(null);
+                }}
+                onUpdate={() => {
+                    setLabelsRefreshKey((prev) => prev + 1);
+                }}
+            />
         </ProtectedRoute>
     );
 }

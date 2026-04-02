@@ -13,11 +13,13 @@ from .auth import get_current_staff_user
 from ..models.models import User, UserCreate, UserResponse
 from ..models.password_models import PasswordChangeFromClient
 from ..CRUD.users import (
+    apply_bulk_user_operation,
     get_all_users,
     get_user_by_id,
     get_user_by_username,
     get_active_users,
     get_admin_users,
+    preview_bulk_user_operation,
     create_user,
     update_user,
     update_user_password,
@@ -32,6 +34,12 @@ from ..CRUD.users import (
 
 class PasswordChange(BaseModel):
     new_password: str
+
+
+class BulkUsersRequest(BaseModel):
+    user_ids: List[int]
+    operation: str
+    data: dict = {}
 
 router = APIRouter(prefix="/users", tags=["users"], dependencies=[Depends(get_current_staff_user)])
 
@@ -358,6 +366,36 @@ async def bulk_upload_users(file: UploadFile = File(...), db: Session = Depends(
         "email_domain": "@estud.usfq.edu.ec",
         "synced_to_clients": True if users_created else False
     }
+
+
+@router.post("/bulk/preview")
+def preview_bulk_user_changes(payload: BulkUsersRequest, db: Session = Depends(get_db)):
+    """Genera un preview de cambios para una operación masiva sobre usuarios."""
+    if not payload.user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_ids cannot be empty",
+        )
+
+    try:
+        return preview_bulk_user_operation(db, payload.user_ids, payload.operation, payload.data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/bulk/apply")
+def apply_bulk_user_changes(payload: BulkUsersRequest, db: Session = Depends(get_db)):
+    """Aplica cambios masivos para usuarios y sincroniza clientes una sola vez."""
+    if not payload.user_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_ids cannot be empty",
+        )
+
+    try:
+        return apply_bulk_user_operation(db, payload.user_ids, payload.operation, payload.data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.post("/{username}/change-password-from-client")

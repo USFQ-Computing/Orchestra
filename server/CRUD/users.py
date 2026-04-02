@@ -6,7 +6,7 @@ from typing import List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models.models import User, UserCreate
+from ..models.models import Label, User, UserCreate, UserLabel
 from ..utils.auth import hash_password
 
 logger = logging.getLogger(__name__)
@@ -282,3 +282,248 @@ def delete_user(db: Session, user_id: int) -> bool:
 
 # AUTHENTICATION
 # Autenticación movida a utils/auth.py (authenticate_user devuelve JWT)
+
+
+def preview_bulk_user_operation(
+    db: Session, user_ids: List[int], operation: str, data: dict
+) -> dict:
+    """Genera un preview de cambios para operaciones masivas sobre usuarios."""
+    valid_operations = {
+        "set_active",
+        "set_admin",
+        "expire_password",
+        "add_labels",
+        "remove_labels",
+        "replace_labels",
+    }
+    if operation not in valid_operations:
+        raise ValueError(f"Unsupported operation: {operation}")
+
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    found_ids = {u.id for u in users}
+
+    results = []
+    for requested_id in user_ids:
+        user = next((u for u in users if u.id == requested_id), None)
+        if not user:
+            results.append(
+                {
+                    "user_id": requested_id,
+                    "status": "not_found",
+                    "changed": False,
+                    "message": "User not found",
+                }
+            )
+            continue
+
+        if operation == "set_active":
+            target = int(data.get("is_active", 1))
+            changed = int(user.is_active) != target
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "change" if changed else "noop",
+                    "changed": changed,
+                    "message": f"is_active -> {target}",
+                }
+            )
+        elif operation == "set_admin":
+            target = int(data.get("is_admin", 0))
+            changed = int(user.is_admin) != target
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "change" if changed else "noop",
+                    "changed": changed,
+                    "message": f"is_admin -> {target}",
+                }
+            )
+        elif operation == "expire_password":
+            changed = not bool(user.must_change_password)
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "change" if changed else "noop",
+                    "changed": changed,
+                    "message": "must_change_password -> true",
+                }
+            )
+        else:
+            label_ids = [int(x) for x in data.get("label_ids", [])]
+            if not label_ids:
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "status": "invalid",
+                        "changed": False,
+                        "message": "label_ids is required",
+                    }
+                )
+                continue
+
+            current_ids = {
+                row.label_id
+                for row in db.query(UserLabel)
+                .filter(UserLabel.user_id == user.id)
+                .all()
+            }
+            target_ids = set(label_ids)
+            if operation == "add_labels":
+                changed = len(target_ids - current_ids) > 0
+            elif operation == "remove_labels":
+                changed = len(target_ids & current_ids) > 0
+            else:
+                changed = current_ids != target_ids
+
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "change" if changed else "noop",
+                    "changed": changed,
+                    "message": f"{operation} with labels={label_ids}",
+                }
+            )
+
+    return {
+        "operation": operation,
+        "requested": len(user_ids),
+        "found": len(found_ids),
+        "to_change": len([r for r in results if r.get("changed")]),
+        "results": results,
+    }
+
+
+def apply_bulk_user_operation(
+    db: Session, user_ids: List[int], operation: str, data: dict
+) -> dict:
+    """Aplica una operación masiva sobre usuarios y sincroniza una sola vez."""
+    valid_operations = {
+        "set_active",
+        "set_admin",
+        "expire_password",
+        "add_labels",
+        "remove_labels",
+        "replace_labels",
+    }
+    if operation not in valid_operations:
+        raise ValueError(f"Unsupported operation: {operation}")
+
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    users_by_id = {u.id: u for u in users}
+    results = []
+    changed_count = 0
+
+    label_ids = [int(x) for x in data.get("label_ids", [])]
+    valid_label_ids = set()
+    if operation in {"add_labels", "remove_labels", "replace_labels"}:
+        labels = (
+            db.query(Label)
+            .filter(Label.id.in_(label_ids), Label.active.is_(True))
+            .all()
+        )
+        valid_label_ids = {l.id for l in labels}
+        missing = sorted(set(label_ids) - valid_label_ids)
+        if missing:
+            return {
+                "operation": operation,
+                "requested": len(user_ids),
+                "success": 0,
+                "failed": len(user_ids),
+                "results": [
+                    {
+                        "user_id": uid,
+                        "status": "failed",
+                        "message": f"Invalid/inactive label ids: {missing}",
+                    }
+                    for uid in user_ids
+                ],
+            }
+
+    for requested_id in user_ids:
+        user = users_by_id.get(requested_id)
+        if not user:
+            results.append(
+                {
+                    "user_id": requested_id,
+                    "status": "failed",
+                    "message": "User not found",
+                }
+            )
+            continue
+
+        changed = False
+        if operation == "set_active":
+            target = int(data.get("is_active", 1))
+            if int(user.is_active) != target:
+                user.is_active = target
+                changed = True
+        elif operation == "set_admin":
+            target = int(data.get("is_admin", 0))
+            if int(user.is_admin) != target:
+                user.is_admin = target
+                changed = True
+        elif operation == "expire_password":
+            if not user.must_change_password:
+                user.must_change_password = True
+                user.password_changed_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                changed = True
+        else:
+            current_rows = (
+                db.query(UserLabel).filter(UserLabel.user_id == user.id).all()
+            )
+            current_ids = {row.label_id for row in current_rows}
+
+            if operation == "add_labels":
+                to_add = valid_label_ids - current_ids
+                for label_id in to_add:
+                    db.add(UserLabel(user_id=user.id, label_id=label_id))
+                changed = len(to_add) > 0
+            elif operation == "remove_labels":
+                to_remove = valid_label_ids & current_ids
+                if to_remove:
+                    db.query(UserLabel).filter(
+                        UserLabel.user_id == user.id,
+                        UserLabel.label_id.in_(to_remove),
+                    ).delete(synchronize_session=False)
+                    changed = True
+            else:  # replace_labels
+                if current_ids != valid_label_ids:
+                    db.query(UserLabel).filter(UserLabel.user_id == user.id).delete(
+                        synchronize_session=False
+                    )
+                    for label_id in valid_label_ids:
+                        db.add(UserLabel(user_id=user.id, label_id=label_id))
+                    changed = True
+
+        if changed:
+            changed_count += 1
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "updated",
+                    "message": "Updated",
+                }
+            )
+        else:
+            results.append(
+                {
+                    "user_id": user.id,
+                    "status": "skipped",
+                    "message": "No changes needed",
+                }
+            )
+
+    db.commit()
+
+    if changed_count > 0:
+        _trigger_user_sync(db)
+
+    return {
+        "operation": operation,
+        "requested": len(user_ids),
+        "success": len([r for r in results if r["status"] in {"updated", "skipped"}]),
+        "updated": len([r for r in results if r["status"] == "updated"]),
+        "failed": len([r for r in results if r["status"] == "failed"]),
+        "results": results,
+        "synced_to_clients": changed_count > 0,
+    }

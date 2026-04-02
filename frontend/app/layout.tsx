@@ -3,7 +3,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-    title: "PP - Sistema de Gestión de Servidores",
+    title: "Orchestra - Sistema de Gestión de Servidores",
     description: "Sistema de gestión de servidores con Ansible",
 };
 

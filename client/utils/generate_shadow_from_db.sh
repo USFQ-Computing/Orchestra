@@ -21,10 +21,30 @@ source /etc/default/sssd-pgsql 2>/dev/null || {
   NSS_DB_PASSWORD="${NSS_DB_PASSWORD:-postgres}"
 }
 
-mkdir -p /var/lib/extrausers
-
 TEMP_FILE="/var/lib/extrausers/shadow.tmp"
 TARGET_FILE="/var/lib/extrausers/shadow"
+TARGET_DIR="/var/lib/extrausers"
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
+}
+
+# This script is usually executed by root (timers/hooks). In some PAM flows,
+# it may run as an unprivileged user; in that case, skip gracefully.
+if [ ! -d "$TARGET_DIR" ] && ! mkdir -p "$TARGET_DIR" 2>/dev/null; then
+  log "WARN: Cannot create $TARGET_DIR (insufficient permissions). Skipping shadow regeneration."
+  exit 0
+fi
+
+if [ ! -w "$TARGET_DIR" ]; then
+  log "WARN: No write permission on $TARGET_DIR. Skipping shadow regeneration."
+  exit 0
+fi
+
+if [ -e "$TARGET_FILE" ] && [ ! -r "$TARGET_FILE" ]; then
+  log "WARN: Cannot read $TARGET_FILE. Skipping shadow regeneration."
+  exit 0
+fi
 
 # Fetch user metadata (no password hash) from PostgreSQL.
 #
@@ -55,12 +75,12 @@ DB_ROWS=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
    ORDER BY system_uid" 2>/dev/null)
 
 if [ $? -ne 0 ]; then
-  echo "Error: PostgreSQL query failed" >&2
+  log "ERROR: PostgreSQL query failed"
   exit 1
 fi
 
 if [ -z "$DB_ROWS" ]; then
-  echo "Warning: No active users found, creating empty shadow file" >&2
+  log "WARN: No active users found, creating empty shadow file"
   touch "$TARGET_FILE"
   chmod 640 "$TARGET_FILE"
   chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null
@@ -78,7 +98,7 @@ while IFS=$'\t' read -r USERNAME SP_LSTCHG SP_MAX; do
 
   # Look up the current hash in the existing shadow file (field 2, colon-separated).
   EXISTING_HASH=""
-  if [ -f "$TARGET_FILE" ]; then
+  if [ -r "$TARGET_FILE" ]; then
     EXISTING_HASH=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' "$TARGET_FILE")
   fi
 
@@ -101,11 +121,11 @@ while IFS=$'\t' read -r USERNAME SP_LSTCHG SP_MAX; do
 done <<< "$DB_ROWS"
 
 mv "$TEMP_FILE" "$TARGET_FILE" || {
-  echo "Error: Failed to move $TEMP_FILE to $TARGET_FILE" >&2
+  log "ERROR: Failed to move $TEMP_FILE to $TARGET_FILE"
   exit 1
 }
 
-chmod 640 "$TARGET_FILE" || echo "Warning: Could not set permissions on $TARGET_FILE" >&2
-chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null || echo "Warning: Could not set ownership on $TARGET_FILE" >&2
+chmod 640 "$TARGET_FILE" || log "WARN: Could not set permissions on $TARGET_FILE"
+chown root:shadow "$TARGET_FILE" 2>/dev/null || chown root:root "$TARGET_FILE" 2>/dev/null || log "WARN: Could not set ownership on $TARGET_FILE"
 
-echo "Successfully generated $TARGET_FILE" >&2
+log "INFO: Successfully generated $TARGET_FILE"

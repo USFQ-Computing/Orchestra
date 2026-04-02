@@ -42,6 +42,7 @@ export default function CreateContainerModal({
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [selectedUserId, setSelectedUserId] = useState<string>("");
+    const [userSearch, setUserSearch] = useState<string>("");
 
     // Valores por defecto para Colab Runtime
     const DEFAULT_IMAGE =
@@ -81,6 +82,17 @@ export default function CreateContainerModal({
             }));
         }
     }, [preselectedUserId]);
+
+    useEffect(() => {
+        if (!preselectedUserId) {
+            return;
+        }
+
+        const preselectedUser = users.find((u) => u.id === preselectedUserId);
+        if (preselectedUser) {
+            setUserSearch(preselectedUser.username);
+        }
+    }, [preselectedUserId, users]);
 
     const fetchCurrentUser = async () => {
         try {
@@ -211,6 +223,17 @@ export default function CreateContainerModal({
         return cmd;
     };
 
+    const handleSelectUser = (user: User) => {
+        const userId = user.id.toString();
+        setSelectedUserId(userId);
+        setUserSearch(user.username);
+        setFormData((prev) => ({
+            ...prev,
+            user_id: userId,
+            name: `colab_${user.username}`,
+        }));
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -302,9 +325,17 @@ export default function CreateContainerModal({
         });
         setError("");
         setShowAdvanced(false);
+        setUserSearch("");
 
         // Mantener el usuario preseleccionado si existe
-        if (!preselectedUserId) {
+        if (preselectedUserId) {
+            const preselectedUser = users.find(
+                (u) => u.id === preselectedUserId,
+            );
+            if (preselectedUser) {
+                setUserSearch(preselectedUser.username);
+            }
+        } else {
             setSelectedUserId("");
         }
     };
@@ -317,6 +348,24 @@ export default function CreateContainerModal({
     };
 
     if (!isOpen) return null;
+
+    const filteredUsers = users
+        .filter((user) => {
+            const query = userSearch.trim().toLowerCase();
+            if (!query) {
+                return true;
+            }
+
+            return (
+                user.username.toLowerCase().includes(query) ||
+                user.email.toLowerCase().includes(query)
+            );
+        })
+        .slice(0, 20);
+
+    const selectedUser = users.find(
+        (u) => u.id.toString() === selectedUserId,
+    );
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -365,51 +414,59 @@ export default function CreateContainerModal({
                             {adminMode && (
                                 <div>
                                     <label className="label">Usuario *</label>
-                                    <select
-                                        value={selectedUserId}
+                                    <input
+                                        type="text"
+                                        value={userSearch}
                                         onChange={(e) => {
-                                            const userId = e.target.value;
-                                            setSelectedUserId(userId);
-                                            setFormData({
-                                                ...formData,
-                                                user_id: userId,
-                                            });
-
-                                            // Actualizar el nombre del contenedor con el nuevo usuario
-                                            if (userId) {
-                                                const selectedUser = users.find(
-                                                    (u) =>
-                                                        u.id.toString() ===
-                                                        userId,
-                                                );
-                                                if (selectedUser) {
-                                                    setFormData((prev) => ({
-                                                        ...prev,
-                                                        name: `colab_${selectedUser.username}`,
-                                                        user_id: userId,
-                                                    }));
-                                                }
-                                            }
+                                            const value = e.target.value;
+                                            setUserSearch(value);
+                                            setSelectedUserId("");
+                                            setFormData((prev) => ({
+                                                ...prev,
+                                                user_id: "",
+                                            }));
                                         }}
-                                        className="select"
+                                        placeholder="Buscar por usuario o email"
+                                        className={getInputClass()}
                                         required
-                                        disabled={
-                                            loading || !!preselectedUserId
-                                        }
-                                    >
-                                        <option value="">
-                                            Selecciona un usuario
-                                        </option>
-                                        {users.map((user) => (
-                                            <option
-                                                key={user.id}
-                                                value={user.id}
-                                            >
-                                                {user.username} ({user.email})
-                                                {user.is_admin ? " 👑" : ""}
-                                            </option>
-                                        ))}
-                                    </select>
+                                        disabled={loading || !!preselectedUserId}
+                                    />
+
+                                    {selectedUser && (
+                                        <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                                            ✅ Seleccionado: {selectedUser.username} ({selectedUser.email})
+                                        </p>
+                                    )}
+
+                                    {!preselectedUserId && userSearch.trim() && (
+                                        <div className="mt-2 border border-gray-200 dark:border-gray-700 rounded-lg max-h-48 overflow-y-auto bg-white dark:bg-gray-900">
+                                            {filteredUsers.length > 0 ? (
+                                                filteredUsers.map((user) => (
+                                                    <button
+                                                        key={user.id}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            handleSelectUser(user)
+                                                        }
+                                                        className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-b-0"
+                                                    >
+                                                        <div className="text-sm font-medium text-gray-900 dark:text-white">
+                                                            {user.username}
+                                                            {user.is_admin ? " 👑" : ""}
+                                                        </div>
+                                                        <div className="text-xs text-muted">
+                                                            {user.email}
+                                                        </div>
+                                                    </button>
+                                                ))
+                                            ) : (
+                                                <p className="px-3 py-2 text-xs text-muted">
+                                                    No se encontraron usuarios
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+
                                     {users.length === 0 && (
                                         <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
                                             ⚠️ No hay usuarios activos
@@ -417,7 +474,7 @@ export default function CreateContainerModal({
                                         </p>
                                     )}
                                     <p className="text-xs text-muted mt-1">
-                                        Selecciona el usuario propietario del
+                                        Busca y selecciona el usuario propietario del
                                         contenedor
                                     </p>
                                 </div>
