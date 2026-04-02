@@ -9,42 +9,14 @@ until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" > /dev/null
 done
 echo "✓ Local database is ready"
 
-# Verify users table exists, create if missing
-echo "Verifying users table..."
-if PGPASSWORD="${NSS_DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" -c "\d users" > /dev/null 2>&1; then
-  echo "✓ Users table exists"
+# Ensure schema using SQL compatibility script
+echo "Applying SQL schema compatibility script..."
+if PGPASSWORD="${NSS_DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" -f /app/client/init_db_compatible.sql > /dev/null 2>&1; then
+  echo "✓ SQL schema compatibility applied"
 else
-  echo "⚠ Users table not found, creating it..."
-  
-  # Create users table
-  PGPASSWORD="${NSS_DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" << 'EOF'
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    username VARCHAR UNIQUE NOT NULL,
-    email VARCHAR UNIQUE NOT NULL,
-    password_hash VARCHAR NOT NULL,
-    is_admin INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    system_uid INTEGER UNIQUE NOT NULL,
-    system_gid INTEGER DEFAULT 2000,
-    ssh_public_key VARCHAR,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT username_valid_pattern CHECK (username ~ '^[a-z_][a-z0-9_-]*$')
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_system_uid ON users(system_uid);
-EOF
-
-  # Verify creation was successful
-  if PGPASSWORD="${NSS_DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" -c "\d users" > /dev/null 2>&1; then
-    echo "✓ Users table created successfully"
-  else
-    echo "✗ ERROR: Failed to create users table!"
-    echo "  Please check database permissions and logs."
-    exit 1
-  fi
+  echo "✗ ERROR: Failed to apply /app/client/init_db_compatible.sql"
+  echo "  Please check database permissions and logs."
+  exit 1
 fi
 
 # Real-time synchronization via API only

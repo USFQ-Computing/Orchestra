@@ -137,7 +137,7 @@ services:
             - "5433:5432" # Exponer en puerto 5433 del host para NSS/PAM
         volumes:
             - client_db_data:/var/lib/postgresql/data
-            - ./client/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro # Script de inicialización
+            - ./client/init_db_compatible.sql:/docker-entrypoint-initdb.d/init_db.sql:ro # Script de inicialización compatible
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB}"]
             interval: 5s
