@@ -402,7 +402,7 @@ export default function ExecutionsPage() {
                     </button>
                 </div>
             ) : (
-                <div className="card overflow-hidden">
+                <div className="card p-0">
                     <div className="overflow-x-auto">
                         <table className="table">
                             <thead className="table-header">
@@ -430,20 +430,20 @@ export default function ExecutionsPage() {
                                         onClick={() =>
                                             handleRowClick(execution.id)
                                         }
-                                        className="table-row cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                                        className="table-row cursor-pointer"
                                     >
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <span className="text-sm font-semibold text-gray-900 dark:text-white">
                                                 #{execution.id}
                                             </span>
                                         </td>
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <span className="text-sm text-gray-900 dark:text-white">
                                                 Playbook #
                                                 {execution.playbook_id}
                                             </span>
                                         </td>
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <div className="flex items-center">
                                                 <div className="flex-shrink-0 h-7 w-7 rounded-full bg-primary-600 dark:bg-primary-500 flex items-center justify-center mr-2">
                                                     <span className="text-white font-semibold text-xs">
@@ -457,7 +457,7 @@ export default function ExecutionsPage() {
                                                 </span>
                                             </div>
                                         </td>
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <span className="text-sm text-gray-700 dark:text-gray-300">
                                                 {execution.servers.length}{" "}
                                                 {execution.servers.length === 1
@@ -465,7 +465,7 @@ export default function ExecutionsPage() {
                                                     : "servidores"}
                                             </span>
                                         </td>
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <div className="flex flex-col">
                                                 <span className="text-sm text-gray-900 dark:text-white">
                                                     {new Date(
@@ -492,7 +492,7 @@ export default function ExecutionsPage() {
                                                 </span>
                                             </div>
                                         </td>
-                                        <td className="table-cell py-3">
+                                        <td className="table-cell">
                                             <div className="flex items-center">
                                                 {/* Visual Indicator Dot */}
                                                 <span
