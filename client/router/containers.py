@@ -4,34 +4,14 @@ Router para reportar estado de contenedores Docker locales.
 Este módulo NO usa base de datos local, consulta Docker directamente.
 """
 
-import os
 import subprocess
 from typing import List
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+
+from ..models.container_models import ContainerReport, ContainerReportResponse
 
 router = APIRouter(prefix="/api/containers", tags=["Containers"])
-
-
-class ContainerReport(BaseModel):
-    """Modelo para reportar estado de un contenedor local"""
-
-    name: str
-    container_id: str
-    image: str
-    status: str  # running, exited, created, paused, etc.
-    ports: str | None = None
-    created: str | None = None
-
-
-class ContainerReportResponse(BaseModel):
-    """Respuesta con lista de contenedores"""
-
-    success: bool
-    message: str
-    containers_count: int
-    containers: List[ContainerReport]
 
 
 def parse_docker_ps_line(line: str) -> ContainerReport | None:

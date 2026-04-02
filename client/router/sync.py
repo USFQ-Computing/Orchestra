@@ -4,13 +4,12 @@ Router para sincronización de datos desde el servidor central
 
 import os
 import subprocess
-from datetime import datetime
-from typing import List, Optional
 
 import psycopg2
 from dateutil import parser as date_parser
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException
+
+from ..models.sync_models import SyncRequest, SyncResponse
 
 router = APIRouter(prefix="/api/sync", tags=["Synchronization"])
 
@@ -69,42 +68,6 @@ def ensure_tables_exist(conn):
         print(f"❌ Error creating tables: {str(e)}")
         conn.rollback()
         raise
-
-
-class UserSync(BaseModel):
-    """Modelo para sincronizar usuarios"""
-
-    id: int
-    username: str
-    email: str
-    password_hash: str
-    is_admin: int
-    is_active: int
-    must_change_password: bool = False
-    system_uid: int
-    system_gid: Optional[int] = None
-    ssh_public_key: Optional[str] = None
-    password_max_age_days: Optional[int] = None
-    password_changed_at: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-
-
-class SyncRequest(BaseModel):
-    """Request de sincronización con metadatos"""
-
-    server_url: Optional[str] = None  # URL del servidor central
-    users: List[UserSync]
-
-
-class SyncResponse(BaseModel):
-    """Respuesta de sincronización"""
-
-    success: bool
-    message: str
-    users_synced: int
-    users_created: int
-    users_updated: int
-    users_deleted: int
 
 
 def get_db_connection():
