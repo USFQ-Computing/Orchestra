@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..utils.db import Base
@@ -14,6 +14,7 @@ class ServerCreate(BaseModel):
     )
     ssh_port: int = 22
     description: str = ""
+    container_runtime_defaults: dict | None = None
 
 
 class ServerResponse(BaseModel):
@@ -27,6 +28,7 @@ class ServerResponse(BaseModel):
     has_ssh_password: bool = (
         False  # Indica si tiene contraseña guardada (usada para become/sudo)
     )
+    container_runtime_defaults: dict | None = None
 
     class Config:
         from_attributes = True
@@ -47,3 +49,6 @@ class Server(Base):
     ssh_password_encrypted: Mapped[str | None] = mapped_column(
         String, nullable=True
     )  # Contraseña SSH encriptada (también usada para become/sudo)
+    container_runtime_defaults: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
+    )

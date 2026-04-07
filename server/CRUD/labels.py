@@ -21,6 +21,7 @@ def create_label(db: Session, label: LabelCreate) -> Label:
         slug=label.slug,
         color=label.color,
         active=label.active,
+        container_runtime_overrides=label.container_runtime_overrides,
     )
     db.add(db_label)
     db.commit()
@@ -70,6 +71,8 @@ def update_label(db: Session, label_id: int, label_update: LabelUpdate) -> Optio
         db_label.color = label_update.color
     if label_update.active is not None:
         db_label.active = label_update.active
+    if label_update.container_runtime_overrides is not None:
+        db_label.container_runtime_overrides = label_update.container_runtime_overrides
 
     db.commit()
     db.refresh(db_label)

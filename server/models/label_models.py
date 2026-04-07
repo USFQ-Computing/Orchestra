@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from pydantic import BaseModel
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -16,6 +16,7 @@ class Label(Base):
     slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    container_runtime_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -43,6 +44,7 @@ class LabelCreate(BaseModel):
     slug: str
     color: str | None = None
     active: bool = True
+    container_runtime_overrides: dict | None = None
 
 
 class LabelUpdate(BaseModel):
@@ -50,6 +52,7 @@ class LabelUpdate(BaseModel):
     slug: str | None = None
     color: str | None = None
     active: bool | None = None
+    container_runtime_overrides: dict | None = None
 
 
 class LabelResponse(BaseModel):
@@ -58,6 +61,7 @@ class LabelResponse(BaseModel):
     slug: str
     color: str | None
     active: bool
+    container_runtime_overrides: dict | None
     created_at: datetime
     updated_at: datetime
 

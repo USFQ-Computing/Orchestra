@@ -1880,6 +1880,17 @@ export default function UsersPage() {
             <UserLabelsModal
                 isOpen={showLabelsModal}
                 user={selectedUserForLabels}
+                availableLabels={availableLabels}
+                cachedUserLabels={
+                    selectedUserForLabels
+                        ? getCachedUserLabels(selectedUserForLabels.id)
+                        : undefined
+                }
+                onUserLabelsUpdated={(labels) => {
+                    if (selectedUserForLabels) {
+                        cacheUserLabels(selectedUserForLabels.id, labels);
+                    }
+                }}
                 onClose={() => {
                     setShowLabelsModal(false);
                     setSelectedUserForLabels(null);

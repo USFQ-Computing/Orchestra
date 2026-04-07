@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import ProtectedRoute from "@/app/components/ProtectedRoute";
 import { authService } from "@/lib/api";
-import { serversService, Server } from "@/lib/services";
+import {
+    serversService,
+    Server,
+    ContainerRuntimePolicy,
+} from "@/lib/services";
 import {
     cn,
     getStatusBadgeClass,
@@ -13,6 +17,49 @@ import {
     getButtonClass,
     getAlertClass,
 } from "@/lib/styles";
+
+function normalizeRuntimePolicyForm(
+    policy?: ContainerRuntimePolicy | null,
+) {
+    return {
+        gpus: policy?.gpus || "",
+        memory: policy?.memory || "",
+        shm_size: policy?.shm_size || "",
+        cpus: policy?.cpus !== undefined ? String(policy.cpus) : "",
+        pid_mode: policy?.pid_mode || "",
+        privileged: Boolean(policy?.privileged),
+        command_override: policy?.command_override || "",
+    };
+}
+
+function buildRuntimePolicyPayload(form: {
+    gpus: string;
+    memory: string;
+    shm_size: string;
+    cpus: string;
+    pid_mode: string;
+    privileged: boolean;
+    command_override: string;
+}): ContainerRuntimePolicy {
+    const payload: ContainerRuntimePolicy = {};
+
+    if (form.gpus.trim()) payload.gpus = form.gpus.trim();
+    if (form.memory.trim()) payload.memory = form.memory.trim();
+    if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
+    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    if (form.command_override.trim()) {
+        payload.command_override = form.command_override.trim();
+    }
+    if (form.cpus.trim()) {
+        const parsed = Number(form.cpus.trim());
+        if (!Number.isNaN(parsed)) {
+            payload.cpus = parsed;
+        }
+    }
+    if (form.privileged) payload.privileged = true;
+
+    return payload;
+}
 
 export default function ServersPage() {
     const router = useRouter();
@@ -600,6 +647,9 @@ function AddServerModal({
         ssh_user: "root",
         ssh_password: "",
     });
+    const [runtimeForm, setRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(null),
+    );
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
@@ -609,7 +659,11 @@ function AddServerModal({
         setLoading(true);
 
         try {
-            await serversService.create(formData);
+            await serversService.create({
+                ...formData,
+                container_runtime_defaults:
+                    buildRuntimePolicyPayload(runtimeForm),
+            });
             onSuccess();
         } catch (err: any) {
             setError(
@@ -739,6 +793,103 @@ function AddServerModal({
                                 Requerida para configurar la clave SSH
                                 automáticamente
                             </p>
+                        </div>
+
+                        <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                            <p className="text-sm font-semibold mb-3">
+                                Runtime por defecto del servidor
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input
+                                    className="input"
+                                    placeholder="GPUs (all o 4)"
+                                    value={runtimeForm.gpus}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            gpus: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="Memoria (128g)"
+                                    value={runtimeForm.memory}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            memory: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="SHM Size (16g)"
+                                    value={runtimeForm.shm_size}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            shm_size: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    className="input"
+                                    placeholder="CPUs (8)"
+                                    value={runtimeForm.cpus}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            cpus: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="PID mode (host)"
+                                    value={runtimeForm.pid_mode}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            pid_mode: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="Command override"
+                                    value={runtimeForm.command_override}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            command_override: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                            </div>
+                            <label className="flex items-center gap-2 mt-3">
+                                <input
+                                    type="checkbox"
+                                    checked={runtimeForm.privileged}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            privileged: e.target.checked,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <span className="text-sm">Privileged</span>
+                            </label>
                         </div>
 
                         <div className="modal-footer">
@@ -923,6 +1074,9 @@ function EditServerModal({
         name: server.name,
         ip_address: server.ip_address,
     });
+    const [runtimeForm, setRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(server.container_runtime_defaults),
+    );
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
@@ -941,6 +1095,11 @@ function EditServerModal({
             if (formData.ip_address !== server.ip_address) {
                 await serversService.updateIp(server.id, formData.ip_address);
             }
+
+            await serversService.updateRuntimeDefaults(
+                server.id,
+                buildRuntimePolicyPayload(runtimeForm),
+            );
 
             onSuccess();
         } catch (err: any) {
@@ -1025,6 +1184,103 @@ function EditServerModal({
                                 required
                                 disabled={loading}
                             />
+                        </div>
+
+                        <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                            <p className="text-sm font-semibold mb-3">
+                                Runtime por defecto del servidor
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <input
+                                    className="input"
+                                    placeholder="GPUs (all o 4)"
+                                    value={runtimeForm.gpus}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            gpus: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="Memoria (128g)"
+                                    value={runtimeForm.memory}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            memory: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="SHM Size (16g)"
+                                    value={runtimeForm.shm_size}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            shm_size: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    className="input"
+                                    placeholder="CPUs (8)"
+                                    value={runtimeForm.cpus}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            cpus: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="PID mode (host)"
+                                    value={runtimeForm.pid_mode}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            pid_mode: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <input
+                                    className="input"
+                                    placeholder="Command override"
+                                    value={runtimeForm.command_override}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            command_override: e.target.value,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                            </div>
+                            <label className="flex items-center gap-2 mt-3">
+                                <input
+                                    type="checkbox"
+                                    checked={runtimeForm.privileged}
+                                    onChange={(e) =>
+                                        setRuntimeForm({
+                                            ...runtimeForm,
+                                            privileged: e.target.checked,
+                                        })
+                                    }
+                                    disabled={loading}
+                                />
+                                <span className="text-sm">Privileged</span>
+                            </label>
                         </div>
 
                         <div className="modal-footer">

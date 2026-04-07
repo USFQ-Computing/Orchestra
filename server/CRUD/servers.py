@@ -31,6 +31,7 @@ def create_server(db: Session, server: ServerCreate) -> Server:
         ssh_private_key_path=private_key_path,
         ssh_status="pending",
         ssh_password_encrypted=encrypted_ssh_pwd,
+        container_runtime_defaults=server.container_runtime_defaults,
     )
     db.add(db_server)
     db.commit()
@@ -230,6 +231,7 @@ def create_multiple_servers(db: Session, servers: List[ServerCreate]) -> List[Se
             status="offline",
             ssh_user=server.ssh_user,
             ssh_private_key_path=private_key_path,
+            container_runtime_defaults=server.container_runtime_defaults,
         )
         db_servers.append(db_server)
 

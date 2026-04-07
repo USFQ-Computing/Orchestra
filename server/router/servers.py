@@ -43,6 +43,7 @@ def server_to_response(server: Server) -> ServerResponse:
         ssh_private_key_path=server.ssh_private_key_path,
         ssh_status=server.ssh_status,
         has_ssh_password=bool(server.ssh_password_encrypted),
+        container_runtime_defaults=server.container_runtime_defaults,
     )
 
 
@@ -150,10 +151,16 @@ async def create_new_server(
 def list_servers(
     skip: int = 0,
     limit: int = 100,
+    check_status: bool = True,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    servers = get_all_servers(db, skip=skip, limit=limit)
+    servers = get_all_servers(
+        db,
+        skip=skip,
+        limit=limit,
+        check_status=check_status,
+    )
     return [server_to_response(s) for s in servers]
 
 

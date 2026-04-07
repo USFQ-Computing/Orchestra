@@ -438,7 +438,9 @@ export default function AllContainersPage() {
     const stats = {
         total: allContainers.length,
         running: allContainers.filter((c) => c.status === "running").length,
-        stopped: allContainers.filter((c) => c.status === "stopped").length,
+        stopped:
+            allContainers.length -
+            allContainers.filter((c) => c.status === "running").length,
         public: allContainers.filter((c) => c.is_public).length,
     };
 
@@ -529,7 +531,9 @@ export default function AllContainersPage() {
                     <div className={getCardClass()}>
                         <div className="flex items-center justify-between">
                             <div>
-                                <p className="text-sm text-muted">Detenidos</p>
+                                <p className="text-sm text-muted">
+                                    No en ejecución
+                                </p>
                                 <p className="text-3xl font-bold text-gray-600 dark:text-gray-400">
                                     {stats.stopped}
                                 </p>

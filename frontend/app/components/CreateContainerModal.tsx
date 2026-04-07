@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { cn, getButtonClass, getAlertClass, getInputClass } from "@/lib/styles";
 import { useToast } from "@/app/contexts/ToastContext";
+import { containersService } from "@/lib/services";
 
 interface Server {
     id: number;
@@ -40,6 +41,9 @@ export default function CreateContainerModal({
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [showAdvanced, setShowAdvanced] = useState(false);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewCommand, setPreviewCommand] = useState("");
+    const [previewMeta, setPreviewMeta] = useState<any>(null);
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [selectedUserId, setSelectedUserId] = useState<string>("");
     const [userSearch, setUserSearch] = useState<string>("");
@@ -133,7 +137,8 @@ export default function CreateContainerModal({
 
     const fetchServers = async () => {
         try {
-            const response = await fetch("/api/servers");
+            // Fast path: use cached DB status and skip active network checks on each server.
+            const response = await fetch("/api/servers?check_status=false");
             if (response.ok) {
                 const data = await response.json();
                 // Filtrar solo servidores con SSH configurado y online
@@ -169,58 +174,76 @@ export default function CreateContainerModal({
         return `/media:/media:ro,/mnt:/mnt:ro,/home/${username}:/home/${username}`;
     };
 
-    const buildDockerCommand = () => {
-        let username = currentUser?.username || "user";
+    const handlePreviewCommand = async () => {
+        if (!formData.server_id) {
+            setError("Selecciona un servidor para previsualizar el comando");
+            return;
+        }
+        if (adminMode && !selectedUserId) {
+            setError("Selecciona un usuario para previsualizar el comando");
+            return;
+        }
 
-        // En modo admin, usar el username del usuario seleccionado
-        if (adminMode && selectedUserId) {
-            const selectedUser = users.find(
-                (u) => u.id.toString() === selectedUserId,
-            );
-            if (selectedUser) {
-                username = selectedUser.username;
+        setPreviewLoading(true);
+        setError("");
+        try {
+            const payload: any = {
+                name: formData.name,
+                server_id: parseInt(formData.server_id, 10),
+                image: formData.image,
+                ports: formData.ports || null,
+            };
+
+            if (adminMode && selectedUserId) {
+                payload.user_id = parseInt(selectedUserId, 10);
             }
+
+            const preview = await containersService.previewCommand(payload);
+            setPreviewCommand(preview.command);
+            setPreviewMeta(preview);
+        } catch (err: any) {
+            setError(
+                err.response?.data?.detail ||
+                    "No se pudo generar el preview del comando",
+            );
+        } finally {
+            setPreviewLoading(false);
         }
+    };
 
-        const containerName = formData.name || `colab_${username}`;
+    const copyPreviewCommand = async () => {
+        if (!previewCommand) return;
+        try {
+            if (
+                typeof navigator !== "undefined" &&
+                navigator.clipboard?.writeText &&
+                window.isSecureContext
+            ) {
+                await navigator.clipboard.writeText(previewCommand);
+                toast.success("Comando copiado al portapapeles");
+                return;
+            }
 
-        let cmd = "docker run";
+            // Fallback para HTTP/no secure context
+            const textArea = document.createElement("textarea");
+            textArea.value = previewCommand;
+            textArea.setAttribute("readonly", "");
+            textArea.style.position = "absolute";
+            textArea.style.left = "-9999px";
+            document.body.appendChild(textArea);
+            textArea.select();
+            textArea.setSelectionRange(0, textArea.value.length);
+            const copied = document.execCommand("copy");
+            document.body.removeChild(textArea);
 
-        // Shared memory
-        if (formData.shm_size) {
-            cmd += ` --shm-size=${formData.shm_size}`;
+            if (!copied) {
+                throw new Error("Fallback copy failed");
+            }
+
+            toast.success("Comando copiado al portapapeles");
+        } catch {
+            toast.error("No se pudo copiar el comando");
         }
-
-        // GPUs
-        if (formData.gpus) {
-            cmd += ` --gpus=${formData.gpus}`;
-        }
-
-        // Privileged
-        if (formData.privileged) {
-            cmd += " --privileged";
-        }
-
-        // Auto-publish ports
-        cmd += " -P";
-
-        // Volumes
-        const volumes = formData.volumes || getDefaultVolumes();
-        const volumeList = volumes
-            .split(",")
-            .map((v) => v.trim())
-            .filter((v) => v);
-        volumeList.forEach((vol) => {
-            cmd += ` -v "${vol}"`;
-        });
-
-        // Container name
-        cmd += ` --name=${containerName}`;
-
-        // Image
-        cmd += ` ${formData.image}`;
-
-        return cmd;
     };
 
     const handleSelectUser = (user: User) => {
@@ -326,6 +349,8 @@ export default function CreateContainerModal({
         setError("");
         setShowAdvanced(false);
         setUserSearch("");
+        setPreviewCommand("");
+        setPreviewMeta(null);
 
         // Mantener el usuario preseleccionado si existe
         if (preselectedUserId) {
@@ -746,6 +771,21 @@ export default function CreateContainerModal({
                             <div className="flex justify-end space-x-3 pt-4">
                                 <button
                                     type="button"
+                                    onClick={handlePreviewCommand}
+                                    disabled={
+                                        loading ||
+                                        previewLoading ||
+                                        !formData.server_id ||
+                                        (adminMode && !selectedUserId)
+                                    }
+                                    className={getButtonClass("secondary")}
+                                >
+                                    {previewLoading
+                                        ? "Generando..."
+                                        : "Ver comando real"}
+                                </button>
+                                <button
+                                    type="button"
                                     onClick={handleClose}
                                     disabled={loading}
                                     className={getButtonClass("secondary")}
@@ -776,6 +816,31 @@ export default function CreateContainerModal({
                                     )}
                                 </button>
                             </div>
+
+                            {previewCommand && (
+                                <div className="mt-4 border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900/50">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <p className="text-sm font-medium text-gray-900 dark:text-white">
+                                            Comando docker run (real)
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={copyPreviewCommand}
+                                            className={getButtonClass("secondary")}
+                                        >
+                                            Copiar
+                                        </button>
+                                    </div>
+                                    <pre className="text-xs overflow-x-auto p-3 rounded bg-black text-green-200 whitespace-pre-wrap break-all">
+                                        {previewCommand}
+                                    </pre>
+                                    {previewMeta && (
+                                        <p className="text-xs text-muted mt-2">
+                                            Servidor: {previewMeta.server?.name} | Puertos: {previewMeta.resolved_ports}
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                         </form>
                     </div>
                 </div>

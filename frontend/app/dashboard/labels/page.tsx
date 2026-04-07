@@ -1,10 +1,59 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { labelsService, Label, LabelCreate, LabelUpdate } from "@/lib/services";
+import {
+    labelsService,
+    Label,
+    LabelCreate,
+    LabelUpdate,
+    ContainerRuntimePolicy,
+} from "@/lib/services";
 import ProtectedRoute from "@/app/components/ProtectedRoute";
 import { authService } from "@/lib/api";
 import { useRouter } from "next/navigation";
+
+function normalizeRuntimePolicyForm(
+    policy?: ContainerRuntimePolicy | null,
+) {
+    return {
+        gpus: policy?.gpus || "",
+        memory: policy?.memory || "",
+        shm_size: policy?.shm_size || "",
+        cpus: policy?.cpus !== undefined ? String(policy.cpus) : "",
+        pid_mode: policy?.pid_mode || "",
+        privileged: Boolean(policy?.privileged),
+        command_override: policy?.command_override || "",
+    };
+}
+
+function buildRuntimePolicyPayload(form: {
+    gpus: string;
+    memory: string;
+    shm_size: string;
+    cpus: string;
+    pid_mode: string;
+    privileged: boolean;
+    command_override: string;
+}): ContainerRuntimePolicy {
+    const payload: ContainerRuntimePolicy = {};
+
+    if (form.gpus.trim()) payload.gpus = form.gpus.trim();
+    if (form.memory.trim()) payload.memory = form.memory.trim();
+    if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
+    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    if (form.command_override.trim()) {
+        payload.command_override = form.command_override.trim();
+    }
+    if (form.cpus.trim()) {
+        const parsed = Number(form.cpus.trim());
+        if (!Number.isNaN(parsed)) {
+            payload.cpus = parsed;
+        }
+    }
+    if (form.privileged) payload.privileged = true;
+
+    return payload;
+}
 
 const slugify = (value: string) =>
     value
@@ -33,13 +82,21 @@ export default function LabelsPage() {
         slug: "",
         color: "#6B7280",
         active: true,
+        container_runtime_overrides: {},
     });
     const [editFormData, setEditFormData] = useState<LabelUpdate>({
         name: "",
         slug: "",
         color: "#6B7280",
         active: true,
+        container_runtime_overrides: {},
     });
+    const [createRuntimeForm, setCreateRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(null),
+    );
+    const [editRuntimeForm, setEditRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(null),
+    );
     const [createSlugManuallyEdited, setCreateSlugManuallyEdited] =
         useState(false);
     const [editSlugManuallyEdited, setEditSlugManuallyEdited] =
@@ -95,9 +152,21 @@ export default function LabelsPage() {
         setCreating(true);
 
         try {
-            await labelsService.create(formData);
+            const payload: LabelCreate = {
+                ...formData,
+                container_runtime_overrides:
+                    buildRuntimePolicyPayload(createRuntimeForm),
+            };
+            await labelsService.create(payload);
             setShowCreateModal(false);
-            setFormData({ name: "", slug: "", color: "#6B7280", active: true });
+            setFormData({
+                name: "",
+                slug: "",
+                color: "#6B7280",
+                active: true,
+                container_runtime_overrides: {},
+            });
+            setCreateRuntimeForm(normalizeRuntimePolicyForm(null));
             setCreateSlugManuallyEdited(false);
             loadLabels();
         } catch (error: any) {
@@ -116,7 +185,11 @@ export default function LabelsPage() {
             slug: label.slug,
             color: label.color,
             active: label.active,
+            container_runtime_overrides: label.container_runtime_overrides || {},
         });
+        setEditRuntimeForm(
+            normalizeRuntimePolicyForm(label.container_runtime_overrides),
+        );
         setShowEditModal(true);
     };
 
@@ -127,7 +200,12 @@ export default function LabelsPage() {
         setUpdating(true);
 
         try {
-            await labelsService.update(selectedLabel.id, editFormData);
+            const payload: LabelUpdate = {
+                ...editFormData,
+                container_runtime_overrides:
+                    buildRuntimePolicyPayload(editRuntimeForm),
+            };
+            await labelsService.update(selectedLabel.id, payload);
             setShowEditModal(false);
             setSelectedLabel(null);
             loadLabels();
@@ -294,6 +372,28 @@ export default function LabelsPage() {
                                     ).toLocaleDateString()}
                                 </div>
 
+                                <div className="text-xs text-muted mb-4 space-y-1">
+                                    <div>
+                                        Runtime override:
+                                        {label.container_runtime_overrides &&
+                                        Object.keys(
+                                            label.container_runtime_overrides,
+                                        ).length > 0
+                                            ? " configurado"
+                                            : " no configurado"}
+                                    </div>
+                                    {label.container_runtime_overrides?.memory && (
+                                        <div>
+                                            memory: {label.container_runtime_overrides.memory}
+                                        </div>
+                                    )}
+                                    {label.container_runtime_overrides?.gpus && (
+                                        <div>
+                                            gpus: {label.container_runtime_overrides.gpus}
+                                        </div>
+                                    )}
+                                </div>
+
                                 <div className="flex gap-2 pt-4 border-t border-gray-200 dark:border-gray-700">
                                     <button
                                         onClick={() =>
@@ -417,6 +517,108 @@ export default function LabelsPage() {
                                         />
                                         <span className="text-sm">Etiqueta activa</span>
                                     </label>
+
+                                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                                        <p className="text-sm font-semibold mb-3">
+                                            Runtime Overrides del Label
+                                        </p>
+                                        <p className="text-xs text-muted mb-3">
+                                            Se aplican al crear contenedores del usuario, pero el servidor tiene prioridad final.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <input
+                                                className="input"
+                                                placeholder="GPUs (all o 4)"
+                                                value={createRuntimeForm.gpus}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        gpus: e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="Memoria (128g)"
+                                                value={createRuntimeForm.memory}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        memory: e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="SHM Size (16g)"
+                                                value={createRuntimeForm.shm_size}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        shm_size: e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                min="0"
+                                                className="input"
+                                                placeholder="CPUs (8)"
+                                                value={createRuntimeForm.cpus}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        cpus: e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="PID mode (host)"
+                                                value={createRuntimeForm.pid_mode}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        pid_mode: e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="Command override"
+                                                value={createRuntimeForm.command_override}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        command_override:
+                                                            e.target.value,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                        </div>
+                                        <label className="flex items-center gap-2 mt-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={createRuntimeForm.privileged}
+                                                onChange={(e) =>
+                                                    setCreateRuntimeForm({
+                                                        ...createRuntimeForm,
+                                                        privileged:
+                                                            e.target.checked,
+                                                    })
+                                                }
+                                                disabled={creating}
+                                            />
+                                            <span className="text-sm">Privileged</span>
+                                        </label>
+                                    </div>
                                 </div>
 
                                 <div className="modal-footer">
@@ -552,6 +754,108 @@ export default function LabelsPage() {
                                             Etiqueta activa
                                         </span>
                                     </label>
+
+                                    <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                                        <p className="text-sm font-semibold mb-3">
+                                            Runtime Overrides del Label
+                                        </p>
+                                        <p className="text-xs text-muted mb-3">
+                                            Se aplican al crear contenedores del usuario, pero el servidor tiene prioridad final.
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <input
+                                                className="input"
+                                                placeholder="GPUs (all o 4)"
+                                                value={editRuntimeForm.gpus}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        gpus: e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="Memoria (128g)"
+                                                value={editRuntimeForm.memory}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        memory: e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="SHM Size (16g)"
+                                                value={editRuntimeForm.shm_size}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        shm_size: e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <input
+                                                type="number"
+                                                step="0.1"
+                                                min="0"
+                                                className="input"
+                                                placeholder="CPUs (8)"
+                                                value={editRuntimeForm.cpus}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        cpus: e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="PID mode (host)"
+                                                value={editRuntimeForm.pid_mode}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        pid_mode: e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <input
+                                                className="input"
+                                                placeholder="Command override"
+                                                value={editRuntimeForm.command_override}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        command_override:
+                                                            e.target.value,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                        </div>
+                                        <label className="flex items-center gap-2 mt-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={editRuntimeForm.privileged}
+                                                onChange={(e) =>
+                                                    setEditRuntimeForm({
+                                                        ...editRuntimeForm,
+                                                        privileged:
+                                                            e.target.checked,
+                                                    })
+                                                }
+                                                disabled={updating}
+                                            />
+                                            <span className="text-sm">Privileged</span>
+                                        </label>
+                                    </div>
                                 </div>
 
                                 <div className="modal-footer">

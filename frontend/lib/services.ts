@@ -1,5 +1,34 @@
 import { api } from "./api";
 
+export interface ContainerRuntimePolicy {
+    gpus?: string;
+    memory?: string;
+    shm_size?: string;
+    cpus?: number;
+    pid_mode?: string;
+    privileged?: boolean;
+    command_override?: string;
+}
+
+export interface ContainerCreateRequest {
+    name: string;
+    server_id: number;
+    image: string;
+    ports?: string | null;
+    user_id?: number;
+}
+
+export interface ContainerCommandPreview {
+    command: string;
+    effective_runtime_policy: ContainerRuntimePolicy;
+    resolved_ports: string;
+    server: {
+        id: number;
+        name: string;
+        ip_address: string;
+    };
+}
+
 export interface Server {
     id: number;
     name: string;
@@ -9,6 +38,7 @@ export interface Server {
     ssh_private_key_path: string | null;
     ssh_status?: string; // pending, deployed, failed
     has_ssh_password?: boolean; // Indica si tiene contraseña SSH guardada
+    container_runtime_defaults?: ContainerRuntimePolicy | null;
 }
 
 export interface Metric {
@@ -96,8 +126,24 @@ export const serversService = {
         ip_address: string;
         ssh_user: string;
         ssh_password: string;
+        container_runtime_defaults?: ContainerRuntimePolicy | null;
     }) {
         const response = await api.post<Server>("/servers/", data);
+        return response.data;
+    },
+
+    async update(id: number, data: Partial<Server>) {
+        const response = await api.patch<Server>(`/servers/${id}`, data);
+        return response.data;
+    },
+
+    async updateRuntimeDefaults(
+        id: number,
+        runtimeDefaults: ContainerRuntimePolicy | null,
+    ) {
+        const response = await api.patch<Server>(`/servers/${id}`, {
+            container_runtime_defaults: runtimeDefaults,
+        });
         return response.data;
     },
 
@@ -393,6 +439,7 @@ export interface Label {
     slug: string;
     color: string | null;
     active: boolean;
+    container_runtime_overrides?: ContainerRuntimePolicy | null;
     created_at: string;
     updated_at: string;
 }
@@ -402,6 +449,7 @@ export interface LabelCreate {
     slug: string;
     color?: string | null;
     active?: boolean;
+    container_runtime_overrides?: ContainerRuntimePolicy | null;
 }
 
 export interface LabelUpdate {
@@ -409,6 +457,7 @@ export interface LabelUpdate {
     slug?: string;
     color?: string | null;
     active?: boolean;
+    container_runtime_overrides?: ContainerRuntimePolicy | null;
 }
 
 export const labelsService = {
@@ -466,6 +515,16 @@ export const labelsService = {
         const response = await api.get<
             Array<{ id: number; username: string; email: string }>
         >(`/admin/labels/${labelId}/users`);
+        return response.data;
+    },
+};
+
+export const containersService = {
+    async previewCommand(data: ContainerCreateRequest) {
+        const response = await api.post<ContainerCommandPreview>(
+            "/containers/preview-command",
+            data,
+        );
         return response.data;
     },
 };

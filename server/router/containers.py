@@ -32,6 +32,7 @@ from ..utils.container_sync import (
 )
 from ..utils.db import get_db
 from ..utils.docker_remote import (
+    build_docker_run_command,
     DockerConnectionError,
     DockerContainerNotFoundError,
     DockerImageNotFoundError,
@@ -399,6 +400,72 @@ async def create_new_container(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error: {str(e)}",
         )
+
+
+@router.post("/preview-command")
+async def preview_container_command(
+    container_data: ContainerCreate,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Preview the exact docker run command that would be used for container creation."""
+    from ..CRUD.containers import (
+        get_next_available_port,
+        resolve_effective_runtime_policy,
+    )
+
+    server = get_server_by_id(db, container_data.server_id)
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Server not found"
+        )
+
+    target_user_id = user.id
+    if container_data.user_id is not None:
+        if not user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can preview for other users",
+            )
+        target_user = get_user_by_id(db, container_data.user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {container_data.user_id} not found",
+            )
+        target_user_id = container_data.user_id
+
+    ports = container_data.ports
+    if not ports:
+        next_port = get_next_available_port(db, server.id)
+        ports = f"{next_port}:8080"
+
+    runtime_policy = resolve_effective_runtime_policy(db, server, target_user_id)
+
+    command = build_docker_run_command(
+        name=container_data.name,
+        image=container_data.image,
+        ports=ports,
+        restart_policy="unless-stopped",
+        gpus=runtime_policy.get("gpus"),
+        memory=runtime_policy.get("memory"),
+        shm_size=runtime_policy.get("shm_size"),
+        cpus=runtime_policy.get("cpus"),
+        privileged=runtime_policy.get("privileged"),
+        pid_mode=runtime_policy.get("pid_mode"),
+        command_override=runtime_policy.get("command_override"),
+    )
+
+    return {
+        "command": command,
+        "effective_runtime_policy": runtime_policy,
+        "resolved_ports": ports,
+        "server": {
+            "id": server.id,
+            "name": server.name,
+            "ip_address": server.ip_address,
+        },
+    }
 
 
 @router.post("/{container_id}/start")

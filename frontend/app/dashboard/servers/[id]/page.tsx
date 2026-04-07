@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { serversService, Server, Metric } from "@/lib/services";
+import {
+    serversService,
+    Server,
+    Metric,
+    ContainerRuntimePolicy,
+} from "@/lib/services";
 import Image from "next/image";
 import {
     cn,
@@ -11,6 +16,49 @@ import {
     getButtonClass,
     getIconContainerClass,
 } from "@/lib/styles";
+
+function normalizeRuntimePolicyForm(
+    policy?: ContainerRuntimePolicy | null,
+) {
+    return {
+        gpus: policy?.gpus || "",
+        memory: policy?.memory || "",
+        shm_size: policy?.shm_size || "",
+        cpus: policy?.cpus !== undefined ? String(policy.cpus) : "",
+        pid_mode: policy?.pid_mode || "",
+        privileged: Boolean(policy?.privileged),
+        command_override: policy?.command_override || "",
+    };
+}
+
+function buildRuntimePolicyPayload(form: {
+    gpus: string;
+    memory: string;
+    shm_size: string;
+    cpus: string;
+    pid_mode: string;
+    privileged: boolean;
+    command_override: string;
+}): ContainerRuntimePolicy {
+    const payload: ContainerRuntimePolicy = {};
+
+    if (form.gpus.trim()) payload.gpus = form.gpus.trim();
+    if (form.memory.trim()) payload.memory = form.memory.trim();
+    if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
+    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    if (form.command_override.trim()) {
+        payload.command_override = form.command_override.trim();
+    }
+    if (form.cpus.trim()) {
+        const parsed = Number(form.cpus.trim());
+        if (!Number.isNaN(parsed)) {
+            payload.cpus = parsed;
+        }
+    }
+    if (form.privileged) payload.privileged = true;
+
+    return payload;
+}
 
 export default function ServerDetailPage() {
     const params = useParams();
@@ -22,6 +70,10 @@ export default function ServerDetailPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [wsConnected, setWsConnected] = useState(false);
+    const [savingRuntime, setSavingRuntime] = useState(false);
+    const [runtimeForm, setRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(null),
+    );
     // Verificar que el serverId sea válido
     useEffect(() => {
         console.log("[ServerDetail] Params:", params);
@@ -56,6 +108,11 @@ export default function ServerDetailPage() {
             ]);
             console.log("[ServerDetail] Server data loaded:", serverData);
             setServer(serverData);
+            setRuntimeForm(
+                normalizeRuntimePolicyForm(
+                    serverData.container_runtime_defaults,
+                ),
+            );
             setMetrics(metricsData);
             setError("");
         } catch (error: any) {
@@ -131,6 +188,34 @@ export default function ServerDetailPage() {
             setError(error.message || "Error al sincronizar usuarios");
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleSaveRuntimeDefaults = async (
+        e: React.FormEvent<HTMLFormElement>,
+    ) => {
+        e.preventDefault();
+        if (!server) return;
+
+        setSavingRuntime(true);
+        try {
+            const payload = buildRuntimePolicyPayload(runtimeForm);
+            await serversService.updateRuntimeDefaults(server.id, payload);
+            const updated = await serversService.getById(server.id);
+            setServer(updated);
+            setRuntimeForm(
+                normalizeRuntimePolicyForm(
+                    updated.container_runtime_defaults,
+                ),
+            );
+            setError("");
+        } catch (err: any) {
+            setError(
+                err.response?.data?.detail ||
+                    "Error al guardar configuración de runtime del servidor",
+            );
+        } finally {
+            setSavingRuntime(false);
         }
     };
 
@@ -352,6 +437,135 @@ export default function ServerDetailPage() {
                             </dd>
                         </div>
                     </dl>
+                </div>
+
+                <div className="card">
+                    <h2 className="card-header">Runtime de Contenedores</h2>
+                    <p className="text-sm text-muted mb-4">
+                        Estas reglas tienen prioridad sobre las reglas por label.
+                    </p>
+                    <form
+                        onSubmit={handleSaveRuntimeDefaults}
+                        className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                    >
+                        <div className="form-group">
+                            <label className="label">GPUs</label>
+                            <input
+                                className="input"
+                                value={runtimeForm.gpus}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        gpus: e.target.value,
+                                    })
+                                }
+                                placeholder="all o 4"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">Memoria</label>
+                            <input
+                                className="input"
+                                value={runtimeForm.memory}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        memory: e.target.value,
+                                    })
+                                }
+                                placeholder="128g"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">SHM Size</label>
+                            <input
+                                className="input"
+                                value={runtimeForm.shm_size}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        shm_size: e.target.value,
+                                    })
+                                }
+                                placeholder="45g"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">CPUs</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                className="input"
+                                value={runtimeForm.cpus}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        cpus: e.target.value,
+                                    })
+                                }
+                                placeholder="8"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">PID Mode</label>
+                            <input
+                                className="input"
+                                value={runtimeForm.pid_mode}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        pid_mode: e.target.value,
+                                    })
+                                }
+                                placeholder="host"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">Comando Override</label>
+                            <input
+                                className="input"
+                                value={runtimeForm.command_override}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        command_override: e.target.value,
+                                    })
+                                }
+                                placeholder="bash -lc 'python app.py'"
+                                disabled={savingRuntime}
+                            />
+                        </div>
+                        <label className="flex items-center gap-2 md:col-span-2">
+                            <input
+                                type="checkbox"
+                                checked={runtimeForm.privileged}
+                                onChange={(e) =>
+                                    setRuntimeForm({
+                                        ...runtimeForm,
+                                        privileged: e.target.checked,
+                                    })
+                                }
+                                disabled={savingRuntime}
+                            />
+                            <span className="text-sm">Privileged</span>
+                        </label>
+
+                        <div className="md:col-span-2 flex justify-end">
+                            <button
+                                type="submit"
+                                className={getButtonClass("primary")}
+                                disabled={savingRuntime}
+                            >
+                                {savingRuntime ? "Guardando..." : "Guardar runtime"}
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
 

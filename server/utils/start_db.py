@@ -22,6 +22,35 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def ensure_schema_compatibility() -> None:
+    """Aplica ajustes idempotentes para entornos con esquema antiguo."""
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                """
+                ALTER TABLE servers
+                ADD COLUMN IF NOT EXISTS container_runtime_defaults JSONB NULL
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                ALTER TABLE labels
+                ADD COLUMN IF NOT EXISTS container_runtime_overrides JSONB NULL
+                """
+            )
+        )
+        db.commit()
+        print("✓ Compatibilidad de esquema aplicada (runtime policies)")
+    except Exception as e:
+        db.rollback()
+        print(f"⚠ Error aplicando compatibilidad de esquema: {e}")
+    finally:
+        db.close()
+
+
 def reset_sequences() -> None:
     """Resetea las secuencias de IDs de PostgreSQL para evitar conflictos"""
     db = SessionLocal()
@@ -110,6 +139,8 @@ if __name__ == "__main__":
     print("Inicializando base de datos...")
     init_db()
     print("✓ Tablas de base de datos creadas (si no existían)")
+    print("\nAplicando compatibilidad de esquema...")
+    ensure_schema_compatibility()
     print("\nSincronizando secuencias de IDs...")
     reset_sequences()
     print("\nCreando usuario administrador por defecto...")

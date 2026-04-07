@@ -9,6 +9,9 @@ interface UserLabelsModalProps {
     user: User | null;
     onClose: () => void;
     onUpdate?: () => void;
+    availableLabels?: Label[];
+    cachedUserLabels?: Label[];
+    onUserLabelsUpdated?: (labels: Label[]) => void;
 }
 
 const getContrastTextColor = (backgroundColor: string | null) => {
@@ -42,6 +45,9 @@ export default function UserLabelsModal({
     user,
     onClose,
     onUpdate,
+    availableLabels,
+    cachedUserLabels,
+    onUserLabelsUpdated,
 }: UserLabelsModalProps) {
     const [labels, setLabels] = useState<Label[]>([]);
     const [userLabels, setUserLabels] = useState<number[]>([]);
@@ -54,22 +60,46 @@ export default function UserLabelsModal({
         if (isOpen && user) {
             loadData();
         }
-    }, [isOpen, user]);
+    }, [isOpen, user, availableLabels, cachedUserLabels]);
 
     const loadData = async () => {
         try {
             setLoading(true);
             setError("");
 
-            // Load all active labels
-            const allLabels = await labelsService.getAll(true);
+            const hasAvailableLabels =
+                Array.isArray(availableLabels) && availableLabels.length > 0;
+            const hasCachedUserLabels =
+                Array.isArray(cachedUserLabels);
+
+            // Instant hydration from cache to avoid modal lag.
+            if (hasAvailableLabels) {
+                setLabels(availableLabels!);
+            }
+            if (hasCachedUserLabels) {
+                const cachedIds = cachedUserLabels!.map((l) => l.id);
+                setUserLabels(cachedIds);
+                setInitialLabels(cachedIds);
+            }
+
+            // If we already have everything, skip network requests.
+            if (hasAvailableLabels && hasCachedUserLabels) {
+                return;
+            }
+
+            const [allLabels, userLabs] = await Promise.all([
+                hasAvailableLabels
+                    ? Promise.resolve(availableLabels!)
+                    : labelsService.getAll(true),
+                labelsService.getUserLabels(user!.id),
+            ]);
+
             setLabels(allLabels);
 
-            // Load user's current labels
-            const userLabs = await labelsService.getUserLabels(user!.id);
             const userLabelIds = userLabs.map((l) => l.id);
             setUserLabels(userLabelIds);
             setInitialLabels(userLabelIds);
+            onUserLabelsUpdated?.(userLabs);
         } catch (error: any) {
             console.error("Error loading labels:", error);
             setError(
@@ -96,6 +126,11 @@ export default function UserLabelsModal({
             setError("");
 
             await labelsService.setUserLabels(user.id, userLabels);
+
+            const updatedLabels = labels.filter((label) =>
+                userLabels.includes(label.id),
+            );
+            onUserLabelsUpdated?.(updatedLabels);
 
             setInitialLabels(userLabels);
             if (onUpdate) {

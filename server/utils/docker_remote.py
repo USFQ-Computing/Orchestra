@@ -45,6 +45,64 @@ class DockerContainerNotFoundError(DockerRemoteError):
     pass
 
 
+def build_docker_run_command(
+    name: str,
+    image: str,
+    ports: Optional[str] = None,
+    env_vars: Optional[Dict[str, str]] = None,
+    volumes: Optional[str] = None,
+    restart_policy: str = "unless-stopped",
+    gpus: Optional[str] = None,
+    memory: Optional[str] = None,
+    shm_size: Optional[str] = None,
+    cpus: Optional[float] = None,
+    privileged: Optional[bool] = None,
+    pid_mode: Optional[str] = None,
+    command_override: Optional[str] = None,
+) -> str:
+    """Build docker run command string used for both preview and execution."""
+    cmd_parts = ["docker", "run", "-d"]
+
+    cmd_parts.extend(["--name", name])
+    cmd_parts.extend(["--restart", restart_policy])
+
+    if gpus:
+        cmd_parts.extend(["--gpus", gpus])
+    if memory:
+        cmd_parts.extend(["--memory", memory])
+    if shm_size:
+        cmd_parts.extend(["--shm-size", shm_size])
+    if cpus is not None:
+        cmd_parts.extend(["--cpus", str(cpus)])
+    if privileged:
+        cmd_parts.append("--privileged")
+    if pid_mode:
+        cmd_parts.extend(["--pid", pid_mode])
+
+    if ports:
+        for port_mapping in ports.split(","):
+            port_mapping = port_mapping.strip()
+            if port_mapping:
+                cmd_parts.extend(["-p", port_mapping])
+
+    if env_vars:
+        for key, value in env_vars.items():
+            cmd_parts.extend(["-e", f"{key}={value}"])
+
+    if volumes:
+        for volume in volumes.split(","):
+            volume = volume.strip()
+            if volume:
+                cmd_parts.extend(["-v", volume])
+
+    cmd_parts.append(image)
+
+    if command_override:
+        cmd_parts.append(command_override)
+
+    return " ".join(cmd_parts)
+
+
 class DockerRemoteManager:
     """Manage Docker containers on remote servers via SSH."""
 
@@ -375,6 +433,13 @@ class DockerRemoteManager:
         env_vars: Optional[Dict[str, str]] = None,
         volumes: Optional[str] = None,
         restart_policy: str = "unless-stopped",
+        gpus: Optional[str] = None,
+        memory: Optional[str] = None,
+        shm_size: Optional[str] = None,
+        cpus: Optional[float] = None,
+        privileged: Optional[bool] = None,
+        pid_mode: Optional[str] = None,
+        command_override: Optional[str] = None,
     ) -> str:
         """
         Create and start a Docker container.
@@ -395,39 +460,21 @@ class DockerRemoteManager:
             DockerPortConflictError: If port is already in use
             DockerRemoteError: For other Docker errors
         """
-        # Build docker run command
-        cmd_parts = ["docker", "run", "-d"]
-
-        # Add name
-        cmd_parts.extend(["--name", name])
-
-        # Add restart policy
-        cmd_parts.extend(["--restart", restart_policy])
-
-        # Add port mappings
-        if ports:
-            for port_mapping in ports.split(","):
-                port_mapping = port_mapping.strip()
-                if port_mapping:
-                    cmd_parts.extend(["-p", port_mapping])
-
-        # Add environment variables
-        if env_vars:
-            for key, value in env_vars.items():
-                cmd_parts.extend(["-e", f"{key}={value}"])
-
-        # Add volumes
-        if volumes:
-            for volume in volumes.split(","):
-                volume = volume.strip()
-                if volume:
-                    cmd_parts.extend(["-v", volume])
-
-        # Add image
-        cmd_parts.append(image)
-
-        # Execute command
-        command = " ".join(cmd_parts)
+        command = build_docker_run_command(
+            name=name,
+            image=image,
+            ports=ports,
+            env_vars=env_vars,
+            volumes=volumes,
+            restart_policy=restart_policy,
+            gpus=gpus,
+            memory=memory,
+            shm_size=shm_size,
+            cpus=cpus,
+            privileged=privileged,
+            pid_mode=pid_mode,
+            command_override=command_override,
+        )
         print(f"[Docker] Executing: {command}")
 
         try:

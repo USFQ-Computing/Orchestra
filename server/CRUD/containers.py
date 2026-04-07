@@ -3,7 +3,7 @@ from typing import List, Optional
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from ..models.models import Container, ContainerCreate, Server
+from ..models.models import Container, ContainerCreate, Label, Server, UserLabel
 from ..utils.docker_remote import (
     DockerConnectionError,
     DockerContainerNotFoundError,
@@ -14,10 +14,77 @@ from ..utils.docker_remote import (
 )
 from ..utils.docker_validators import (
     DockerValidationError,
+    validate_cpu_limit,
     validate_container_name,
     validate_image_name,
+    validate_memory_limit,
     validate_ports,
 )
+
+
+GLOBAL_CONTAINER_RUNTIME_DEFAULTS = {
+    "gpus": "all",
+    "shm_size": "45g",
+    "pid_mode": "host",
+    "privileged": True,
+}
+
+
+def _sanitize_runtime_policy(policy: Optional[dict]) -> dict:
+    """Return only known runtime keys and validate basic values."""
+    if not isinstance(policy, dict):
+        return {}
+
+    allowed_keys = {
+        "gpus",
+        "memory",
+        "shm_size",
+        "cpus",
+        "pid_mode",
+        "privileged",
+        "command_override",
+    }
+
+    sanitized = {k: v for k, v in policy.items() if k in allowed_keys and v is not None}
+
+    if "memory" in sanitized:
+        sanitized["memory"] = validate_memory_limit(sanitized.get("memory"))
+
+    if "shm_size" in sanitized:
+        sanitized["shm_size"] = validate_memory_limit(sanitized.get("shm_size"))
+
+    if "cpus" in sanitized:
+        sanitized["cpus"] = validate_cpu_limit(sanitized.get("cpus"))
+
+    if "privileged" in sanitized:
+        sanitized["privileged"] = bool(sanitized.get("privileged"))
+
+    return sanitized
+
+
+def resolve_effective_runtime_policy(db: Session, server: Server, user_id: int) -> dict:
+    """
+    Resolve container runtime policy with precedence:
+    global defaults -> label overrides -> server defaults.
+    """
+    effective = dict(GLOBAL_CONTAINER_RUNTIME_DEFAULTS)
+
+    # Label overrides (ordered by label id for deterministic behavior)
+    labels = (
+        db.query(Label)
+        .join(UserLabel, Label.id == UserLabel.label_id)
+        .filter(UserLabel.user_id == user_id, Label.active == True)
+        .order_by(Label.id.asc())
+        .all()
+    )
+
+    for label in labels:
+        effective.update(_sanitize_runtime_policy(label.container_runtime_overrides))
+
+    # Server-level defaults have highest priority
+    effective.update(_sanitize_runtime_policy(server.container_runtime_defaults))
+
+    return effective
 
 
 def extract_host_ports(ports_string: str) -> List[int]:
@@ -292,6 +359,8 @@ def create_container_with_docker(
     db.commit()
     db.refresh(container)
 
+    runtime_policy = resolve_effective_runtime_policy(db, server, user_id)
+
     try:
         # Conectar con Docker en el servidor remoto
         with DockerRemoteManager(server) as docker:
@@ -301,6 +370,13 @@ def create_container_with_docker(
                 image=container_data.image,
                 ports=ports,
                 restart_policy="unless-stopped",
+                gpus=runtime_policy.get("gpus"),
+                memory=runtime_policy.get("memory"),
+                shm_size=runtime_policy.get("shm_size"),
+                cpus=runtime_policy.get("cpus"),
+                privileged=runtime_policy.get("privileged"),
+                pid_mode=runtime_policy.get("pid_mode"),
+                command_override=runtime_policy.get("command_override"),
             )
 
             # Actualizar container_id y status en BD
