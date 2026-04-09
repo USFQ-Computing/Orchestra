@@ -72,6 +72,21 @@ IS_DB_USER=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
 
 log "INFO: IS_DB_USER='${IS_DB_USER}' for user='${USERNAME}'"
 
+DB_HASH_BEFORE=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+  -h "${DB_HOST}" \
+  -p "${DB_PORT}" \
+  -U "${NSS_DB_USER}" \
+  -d "${DB_NAME}" \
+  -t -A -c "SELECT password_hash FROM users WHERE username = '${USERNAME}' LIMIT 1" \
+  < /dev/null 2>/dev/null || true)
+
+SHADOW_HASH_BEFORE=""
+if [ -r /var/lib/extrausers/shadow ]; then
+  SHADOW_HASH_BEFORE=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' /var/lib/extrausers/shadow)
+fi
+
+log "DEBUG: pre-sync hashes user='${USERNAME}' db_hash='${DB_HASH_BEFORE}' shadow_hash='${SHADOW_HASH_BEFORE}'"
+
 if [ "$IS_DB_USER" != "1" ]; then
   # No es usuario de BD: dejar que pam_unix actualice /etc/shadow
   exit 1
@@ -120,6 +135,21 @@ if [ "$HTTP_CODE" = "200" ]; then
   log "Password successfully synced to central server for user: $USERNAME"
   # Regenerar shadow local inmediatamente para no esperar al timer de 2 min
   /usr/local/bin/generate_shadow_from_db.sh >> "$LOGFILE" 2>&1 || true
+
+  DB_HASH_AFTER=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+    -h "${DB_HOST}" \
+    -p "${DB_PORT}" \
+    -U "${NSS_DB_USER}" \
+    -d "${DB_NAME}" \
+    -t -A -c "SELECT password_hash FROM users WHERE username = '${USERNAME}' LIMIT 1" \
+    < /dev/null 2>/dev/null || true)
+
+  SHADOW_HASH_AFTER=""
+  if [ -r /var/lib/extrausers/shadow ]; then
+    SHADOW_HASH_AFTER=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' /var/lib/extrausers/shadow)
+  fi
+
+  log "DEBUG: post-sync hashes user='${USERNAME}' db_hash='${DB_HASH_AFTER}' shadow_hash='${SHADOW_HASH_AFTER}'"
   exit 0
 else
   log "ERROR: Failed to sync password for user: $USERNAME (HTTP $HTTP_CODE): $BODY"

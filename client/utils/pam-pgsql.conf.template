@@ -20,5 +20,5 @@ pwdtype = bcrypt
 query_auth = SELECT password_hash FROM users WHERE username = '%u' AND is_active = 1
 
 # Optional: log authentication attempts
-# syslog = auth
-# debug = 1
+syslog = auth
+debug = 1

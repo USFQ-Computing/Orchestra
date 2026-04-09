@@ -35,6 +35,8 @@ if [ -z "$USERNAME" ]; then
   exit 1
 fi
 
+PAM_STAGE="${PAM_TYPE:-unknown}"
+
 # Read new password from stdin (provided by pam_exec expose_authtok)
 read -rs NEW_PASSWORD
 if [ -z "$NEW_PASSWORD" ]; then
@@ -51,10 +53,23 @@ if command -v psql >/dev/null 2>&1; then
   [ "$RESULT" = "1" ] && IS_MANAGED=1
 fi
 
+log "DEBUG: pam_update_shadow called user='${USERNAME}' pam_type='${PAM_STAGE}' is_managed=${IS_MANAGED} db_lookup='${RESULT:-}'"
+
 # Not a managed user — let pam_unix handle it
 if [ "$IS_MANAGED" -eq 0 ]; then
   exit 1
 fi
+
+# Capture current hashes for diagnostics before updating shadow.
+OLD_SHADOW_HASH=""
+if [ -r "$SHADOW_FILE" ]; then
+  OLD_SHADOW_HASH=$(awk -F: -v u="$USERNAME" '$1==u{print $2}' "$SHADOW_FILE")
+fi
+
+DB_HASH=$(PGPASSWORD="$DB_PASS" psql \
+  -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+  -tAc "SELECT password_hash FROM users WHERE username = '$USERNAME' LIMIT 1;" \
+  2>/dev/null || true)
 
 # Hash the new password using Python's crypt (SHA-512, random salt)
 NEW_HASH=$(python3 -c "
@@ -66,6 +81,8 @@ if [ -z "$NEW_HASH" ]; then
   log "ERROR: Failed to hash password for $USERNAME"
   exit 1
 fi
+
+log "DEBUG: hash transition user='${USERNAME}' db_hash='${DB_HASH}' old_shadow_hash='${OLD_SHADOW_HASH}' new_shadow_hash='${NEW_HASH}'"
 
 # Update /var/lib/extrausers/shadow in place
 if [ ! -f "$SHADOW_FILE" ]; then

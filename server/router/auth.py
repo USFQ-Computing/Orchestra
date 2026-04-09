@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
+import logging
 
 from ..CRUD.users import create_user
 from ..models.models import (
@@ -21,6 +22,7 @@ from ..utils.auth import (
 from ..utils.db import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 def get_current_staff_user(
@@ -74,6 +76,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    logger.debug("Login attempt received username_or_email=%s", payload.username)
+
     # Validar que el usuario exista y esté activo (por username o email)
     user = (
         db.query(User)
@@ -81,11 +85,20 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         .first()
     )
     if not user:
+        logger.debug("Login failed: user not found username_or_email=%s", payload.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
+    logger.debug(
+        "Login user lookup resolved username=%s is_active=%s password_hash=%s",
+        user.username,
+        getattr(user, "is_active", None),
+        user.password_hash,
+    )
+
     if getattr(user, "is_active", 0) == 0:
+        logger.debug("Login blocked: inactive user username=%s", user.username)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user"
         )
@@ -93,12 +106,18 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     # Usar el username real del usuario encontrado para autenticar
     token = authenticate_user(db, user.username, payload.password)
     if not token:
+        logger.debug("Login failed during password verification username=%s", user.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
 
     # Verificar si debe cambiar contraseña
     must_change = getattr(user, "must_change_password", False)
+    logger.debug(
+        "Login success username=%s must_change_password=%s",
+        user.username,
+        must_change,
+    )
 
     return TokenResponse(access_token=token, must_change_password=must_change)
 
@@ -149,6 +168,12 @@ def change_password(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
+    logger.debug(
+        "Change-password request username=%s current_hash=%s",
+        user.username,
+        user.password_hash,
+    )
+
     # Verificar contraseña actual
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(
@@ -171,7 +196,14 @@ def change_password(
         )
 
     # Actualizar contraseña
+    old_password_hash = user.password_hash
     user.password_hash = hash_password(payload.new_password)
+    logger.debug(
+        "Change-password hash update username=%s old_hash=%s new_hash=%s",
+        user.username,
+        old_password_hash,
+        user.password_hash,
+    )
     user.must_change_password = False  # Desmarcar flag de cambio obligatorio
     user.password_changed_at = datetime.now(timezone.utc)
 
