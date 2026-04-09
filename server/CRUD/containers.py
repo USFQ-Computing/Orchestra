@@ -3,6 +3,7 @@ from typing import List, Optional
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from ..CRUD.app_settings import get_container_runtime_global_defaults
 from ..models.models import Container, ContainerCreate, Label, Server, UserLabel
 from ..utils.docker_remote import (
     DockerConnectionError,
@@ -26,8 +27,38 @@ GLOBAL_CONTAINER_RUNTIME_DEFAULTS = {
     "gpus": "all",
     "shm_size": "45g",
     "pid_mode": "host",
-    "privileged": True,
 }
+
+
+def resolve_default_container_volumes(username: str) -> str:
+    """Return default host volume mappings for Colab-style containers."""
+    return f"/media:/media:ro,/mnt:/mnt:ro,/home/{username}:/home/{username}"
+
+
+def resolve_runtime_volumes(
+    runtime_policy: Optional[dict],
+    username: str,
+) -> str:
+    """
+    Resolve runtime volume mappings and render username placeholders.
+
+    Supported placeholders in settings: $USERNAME, ${USERNAME}, {username}
+    """
+    default_volumes = resolve_default_container_volumes(username)
+
+    if not isinstance(runtime_policy, dict):
+        return default_volumes
+
+    volumes = runtime_policy.get("volumes")
+    if not isinstance(volumes, str) or not volumes.strip():
+        return default_volumes
+
+    return (
+        volumes.strip()
+        .replace("${USERNAME}", username)
+        .replace("$USERNAME", username)
+        .replace("{username}", username)
+    )
 
 
 def _sanitize_runtime_policy(policy: Optional[dict]) -> dict:
@@ -43,6 +74,7 @@ def _sanitize_runtime_policy(policy: Optional[dict]) -> dict:
         "pid_mode",
         "privileged",
         "command_override",
+        "volumes",
     }
 
     sanitized = {k: v for k, v in policy.items() if k in allowed_keys and v is not None}
@@ -67,7 +99,9 @@ def resolve_effective_runtime_policy(db: Session, server: Server, user_id: int) 
     Resolve container runtime policy with precedence:
     global defaults -> label overrides -> server defaults.
     """
+    global_runtime_defaults = get_container_runtime_global_defaults(db)
     effective = dict(GLOBAL_CONTAINER_RUNTIME_DEFAULTS)
+    effective.update(_sanitize_runtime_policy(global_runtime_defaults))
 
     # Label overrides (ordered by label id for deterministic behavior)
     labels = (
@@ -360,6 +394,9 @@ def create_container_with_docker(
     db.refresh(container)
 
     runtime_policy = resolve_effective_runtime_policy(db, server, user_id)
+    target_user = db.query(User).filter(User.id == user_id).first()
+    username = target_user.username if target_user and target_user.username else "user"
+    volumes = resolve_runtime_volumes(runtime_policy, username)
 
     try:
         # Conectar con Docker en el servidor remoto
@@ -369,7 +406,7 @@ def create_container_with_docker(
                 name=container_data.name,
                 image=container_data.image,
                 ports=ports,
-                restart_policy="unless-stopped",
+                volumes=volumes,
                 gpus=runtime_policy.get("gpus"),
                 memory=runtime_policy.get("memory"),
                 shm_size=runtime_policy.get("shm_size"),

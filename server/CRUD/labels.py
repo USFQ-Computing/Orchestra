@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -172,6 +172,28 @@ def get_user_labels(db: Session, user_id: int) -> List[Label]:
         .order_by(Label.name)
         .all()
     )
+
+
+def get_labels_for_users(db: Session, user_ids: List[int]) -> Dict[int, List[Label]]:
+    """Obtiene labels para multiples usuarios en una sola consulta."""
+    if not user_ids:
+        return {}
+
+    # Inicializa cada usuario con lista vacia para evitar checks extra en frontend.
+    grouped_labels: Dict[int, List[Label]] = {user_id: [] for user_id in user_ids}
+
+    rows = (
+        db.query(UserLabel.user_id, Label)
+        .join(Label, Label.id == UserLabel.label_id)
+        .filter(UserLabel.user_id.in_(user_ids))
+        .order_by(UserLabel.user_id, Label.name)
+        .all()
+    )
+
+    for user_id, label in rows:
+        grouped_labels.setdefault(user_id, []).append(label)
+
+    return grouped_labels
 
 
 def set_user_labels(db: Session, user_id: int, label_ids: List[int]) -> bool:

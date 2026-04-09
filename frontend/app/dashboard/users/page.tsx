@@ -240,11 +240,33 @@ export default function UsersPage() {
         (adminFilter !== "all" ? 1 : 0) +
         (labelFilterId !== "all" ? 1 : 0);
 
+    const preloadUserLabels = async (usersList: User[]) => {
+        if (usersList.length === 0) {
+            setUserLabelsCache({});
+            return;
+        }
+
+        try {
+            const userIds = usersList.map((user) => user.id);
+            const labelsMap = await labelsService.getUsersLabelsMap(userIds);
+
+            const normalizedMap: Record<number, Label[]> = {};
+            for (const user of usersList) {
+                normalizedMap[user.id] = labelsMap[user.id] || [];
+            }
+
+            setUserLabelsCache(normalizedMap);
+        } catch (error) {
+            console.error("Error preloading labels for users:", error);
+        }
+    };
+
     const loadUsers = async () => {
         try {
             setLoading(true);
             const data = await usersService.getAll();
             setUsers(data);
+            await preloadUserLabels(data);
             setError("");
         } catch (error: any) {
             console.error("Error loading users:", error);
@@ -1446,6 +1468,15 @@ export default function UsersPage() {
                                             key={`${selectedUser.id}-${labelsRefreshKey}`}
                                             userId={selectedUser.id}
                                             maxShow={3}
+                                            cachedLabels={getCachedUserLabels(
+                                                selectedUser.id,
+                                            )}
+                                            onLabelsLoaded={(labels) =>
+                                                cacheUserLabels(
+                                                    selectedUser.id,
+                                                    labels,
+                                                )
+                                            }
                                         />
                                         <button
                                             type="button"

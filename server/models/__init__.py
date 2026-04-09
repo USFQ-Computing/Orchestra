@@ -1,4 +1,5 @@
 from .ansible_models import AnsibleTask, AnsibleTaskCreate, AnsibleTaskResponse
+from .app_settings_models import AppSetting
 from .auth_models import (
     ChangePasswordRequest,
     LoginRequest,
@@ -24,6 +25,7 @@ __all__ = [
     "AnsibleTask",
     "AnsibleTaskCreate",
     "AnsibleTaskResponse",
+    "AppSetting",
     "ChangePasswordRequest",
     "Container",
     "ContainerCreate",

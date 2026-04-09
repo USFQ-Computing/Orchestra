@@ -40,7 +40,7 @@ function buildRuntimePolicyPayload(form: {
     if (form.gpus.trim()) payload.gpus = form.gpus.trim();
     if (form.memory.trim()) payload.memory = form.memory.trim();
     if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
-    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    payload.pid_mode = form.pid_mode.trim();
     if (form.command_override.trim()) {
         payload.command_override = form.command_override.trim();
     }
@@ -50,7 +50,7 @@ function buildRuntimePolicyPayload(form: {
             payload.cpus = parsed;
         }
     }
-    if (form.privileged) payload.privileged = true;
+    payload.privileged = form.privileged;
 
     return payload;
 }

@@ -26,6 +26,14 @@ from ..CRUD.servers import (
     update_server_name,
     update_server_status,
 )
+from ..CRUD.app_settings import (
+    get_container_runtime_global_defaults,
+    set_container_runtime_global_defaults,
+)
+from ..CRUD.containers import (
+    GLOBAL_CONTAINER_RUNTIME_DEFAULTS,
+    _sanitize_runtime_policy,
+)
 from ..CRUD.users import get_all_users
 from ..models.models import MetricResponse, Server, ServerCreate, ServerResponse
 from ..utils.db import get_db
@@ -91,6 +99,10 @@ class SaveSSHPasswordRequest(BaseModel):
     """Request model for saving SSH password to existing server"""
 
     ssh_password: str
+
+
+class GlobalRuntimeDefaultsUpdateRequest(BaseModel):
+    container_runtime_defaults: dict | None = None
 
 
 async def sync_users_to_new_server(server: Server, db: Session):
@@ -179,6 +191,39 @@ def count_servers_by_status_filter(
     count = count_servers_by_status(db, status_filter)
     print(f"[SERVERS] Count by status '{status_filter}': {count}")
     return {"count": count}
+
+
+@router.get("/runtime-defaults/global")
+def get_global_runtime_defaults(
+    user=Depends(get_current_staff_user),
+    db: Session = Depends(get_db),
+):
+    persisted = get_container_runtime_global_defaults(db)
+    effective = dict(GLOBAL_CONTAINER_RUNTIME_DEFAULTS)
+    effective.update(_sanitize_runtime_policy(persisted))
+
+    return {
+        "container_runtime_defaults": persisted or {},
+        "effective_container_runtime_defaults": effective,
+    }
+
+
+@router.patch("/runtime-defaults/global")
+def patch_global_runtime_defaults(
+    payload: GlobalRuntimeDefaultsUpdateRequest,
+    user=Depends(get_current_staff_user),
+    db: Session = Depends(get_db),
+):
+    sanitized = _sanitize_runtime_policy(payload.container_runtime_defaults)
+    saved = set_container_runtime_global_defaults(db, sanitized)
+
+    effective = dict(GLOBAL_CONTAINER_RUNTIME_DEFAULTS)
+    effective.update(saved)
+
+    return {
+        "container_runtime_defaults": saved,
+        "effective_container_runtime_defaults": effective,
+    }
 
 
 @router.get("/{server_id}", response_model=ServerResponse)

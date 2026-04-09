@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Dict, List
 
 from ..utils.db import get_db
 from .auth import get_current_staff_user
@@ -21,6 +21,7 @@ from ..CRUD.labels import (
     add_label_to_user,
     remove_label_from_user,
     get_user_labels,
+    get_labels_for_users,
     set_user_labels,
     get_users_with_label,
     get_users_with_slug,
@@ -231,6 +232,31 @@ def get_user_labels_endpoint(
 
     labels = get_user_labels(db, user_id)
     return labels
+
+
+@router.post("/users/labels-map", response_model=Dict[int, List[LabelResponse]])
+def get_users_labels_map(
+    user_ids: List[int],
+    db: Session = Depends(get_db),
+):
+    """Obtiene las etiquetas de multiples usuarios en una sola request."""
+    if not user_ids:
+        return {}
+
+    unique_user_ids = sorted(set(user_ids))
+
+    existing_user_ids = {
+        row[0]
+        for row in db.query(User.id).filter(User.id.in_(unique_user_ids)).all()
+    }
+    missing_ids = [uid for uid in unique_user_ids if uid not in existing_user_ids]
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Users not found: {missing_ids}",
+        )
+
+    return get_labels_for_users(db, unique_user_ids)
 
 
 @router.put("/user/{user_id}/labels", status_code=status.HTTP_204_NO_CONTENT)

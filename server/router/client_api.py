@@ -86,11 +86,21 @@ def change_password_from_client(
             detail=f"User '{username}' not found",
         )
 
+    old_password_hash = user.password_hash
+
     # Hash the new password
     hashed_password = bcrypt.hashpw(
         password_data.new_password.encode("utf-8"),
         bcrypt.gensalt(),
     ).decode("utf-8")
+
+    logger.debug(
+        "Password hash update username=%s source_client=%s old_hash=%s new_hash=%s",
+        username,
+        x_client_host,
+        old_password_hash,
+        hashed_password,
+    )
 
     # Update the password in the central database
     user.password_hash = hashed_password

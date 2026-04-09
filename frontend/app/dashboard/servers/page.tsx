@@ -29,6 +29,7 @@ function normalizeRuntimePolicyForm(
         pid_mode: policy?.pid_mode || "",
         privileged: Boolean(policy?.privileged),
         command_override: policy?.command_override || "",
+        volumes: policy?.volumes || "",
     };
 }
 
@@ -40,23 +41,25 @@ function buildRuntimePolicyPayload(form: {
     pid_mode: string;
     privileged: boolean;
     command_override: string;
+    volumes: string;
 }): ContainerRuntimePolicy {
     const payload: ContainerRuntimePolicy = {};
 
     if (form.gpus.trim()) payload.gpus = form.gpus.trim();
     if (form.memory.trim()) payload.memory = form.memory.trim();
     if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
-    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    payload.pid_mode = form.pid_mode.trim();
     if (form.command_override.trim()) {
         payload.command_override = form.command_override.trim();
     }
+    if (form.volumes.trim()) payload.volumes = form.volumes.trim();
     if (form.cpus.trim()) {
         const parsed = Number(form.cpus.trim());
         if (!Number.isNaN(parsed)) {
             payload.cpus = parsed;
         }
     }
-    if (form.privileged) payload.privileged = true;
+    payload.privileged = form.privileged;
 
     return payload;
 }
@@ -69,9 +72,18 @@ export default function ServersPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [showModal, setShowModal] = useState(false);
+    const [showGlobalRuntimeModal, setShowGlobalRuntimeModal] = useState(false);
     const [showRetryModal, setShowRetryModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
     const [selectedServer, setSelectedServer] = useState<Server | null>(null);
+    const [globalRuntimeForm, setGlobalRuntimeForm] = useState(
+        normalizeRuntimePolicyForm(null),
+    );
+    const [savingGlobalRuntime, setSavingGlobalRuntime] = useState(false);
+    const [globalRuntimeFeedback, setGlobalRuntimeFeedback] = useState<{
+        type: "success" | "error";
+        message: string;
+    } | null>(null);
 
     useEffect(() => {
         const verifyAuth = async () => {
@@ -106,13 +118,55 @@ export default function ServersPage() {
 
     const loadServers = async () => {
         try {
-            const data = await serversService.getAll();
+            const [data, globalRuntime] = await Promise.all([
+                serversService.getAll(),
+                serversService.getGlobalRuntimeDefaults(),
+            ]);
             setServers(data);
+            setGlobalRuntimeForm(
+                normalizeRuntimePolicyForm(
+                    globalRuntime.effective_container_runtime_defaults,
+                ),
+            );
+            setGlobalRuntimeFeedback(null);
         } catch (error) {
             console.error("Error loading servers:", error);
             setError("Error al cargar servidores");
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleSaveGlobalRuntimeDefaults = async (
+        e: React.FormEvent<HTMLFormElement>,
+    ) => {
+        e.preventDefault();
+        setSavingGlobalRuntime(true);
+        setGlobalRuntimeFeedback(null);
+
+        try {
+            const payload = buildRuntimePolicyPayload(globalRuntimeForm);
+            const updated = await serversService.updateGlobalRuntimeDefaults(
+                payload,
+            );
+            setGlobalRuntimeForm(
+                normalizeRuntimePolicyForm(
+                    updated.effective_container_runtime_defaults,
+                ),
+            );
+            setGlobalRuntimeFeedback({
+                type: "success",
+                message: "Defaults globales guardados correctamente.",
+            });
+            setError("");
+        } catch (err: any) {
+            const detail =
+                err.response?.data?.detail ||
+                "Error al guardar defaults globales de runtime";
+            setGlobalRuntimeFeedback({ type: "error", message: detail });
+            setError(detail);
+        } finally {
+            setSavingGlobalRuntime(false);
         }
     };
 
@@ -313,6 +367,15 @@ export default function ServersPage() {
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <div className="flex items-center justify-end mb-8">
+                    <button
+                        onClick={() => setShowGlobalRuntimeModal(true)}
+                        className={getButtonClass("secondary")}
+                    >
+                        Configurar defaults globales
+                    </button>
                 </div>
 
                 {/* Servers List */}
@@ -598,6 +661,18 @@ export default function ServersPage() {
                     />
                 )}
 
+                {/* Global Runtime Defaults Modal */}
+                {showGlobalRuntimeModal && (
+                    <GlobalRuntimeDefaultsModal
+                        form={globalRuntimeForm}
+                        saving={savingGlobalRuntime}
+                        feedback={globalRuntimeFeedback}
+                        onChange={setGlobalRuntimeForm}
+                        onClose={() => setShowGlobalRuntimeModal(false)}
+                        onSubmit={handleSaveGlobalRuntimeDefaults}
+                    />
+                )}
+
                 {/* Retry SSH Deploy Modal */}
                 {showRetryModal && selectedServer && (
                     <RetrySSHModal
@@ -631,6 +706,222 @@ export default function ServersPage() {
                 )}
             </div>
         </ProtectedRoute>
+    );
+}
+
+function GlobalRuntimeDefaultsModal({
+    form,
+    saving,
+    feedback,
+    onChange,
+    onClose,
+    onSubmit,
+}: {
+    form: ReturnType<typeof normalizeRuntimePolicyForm>;
+    saving: boolean;
+    feedback: { type: "success" | "error"; message: string } | null;
+    onChange: (value: ReturnType<typeof normalizeRuntimePolicyForm>) => void;
+    onClose: () => void;
+    onSubmit: (e: React.FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+    return (
+        <div className="modal-overlay" onClick={onClose}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h2 className="modal-title">Defaults Globales de Runtime</h2>
+                    <button
+                        onClick={onClose}
+                        className="text-gray-400 hover:text-gray-600"
+                    >
+                        <svg
+                            className="icon-md"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
+                            />
+                        </svg>
+                    </button>
+                </div>
+
+                <div className="modal-body">
+                    <p className="text-sm text-muted mb-4">
+                        Se aplican como base para todos los contenedores. Luego se sobreescriben por labels y por servidor.
+                    </p>
+
+                    {feedback && (
+                        <div
+                            className={cn(
+                                getAlertClass(
+                                    feedback.type === "success"
+                                        ? "success"
+                                        : "error",
+                                ),
+                                "mb-4",
+                            )}
+                        >
+                            <span>{feedback.message}</span>
+                        </div>
+                    )}
+
+                    <form
+                        onSubmit={onSubmit}
+                        className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                    >
+                        <div className="form-group">
+                            <label className="label">GPUs</label>
+                            <input
+                                className="input"
+                                value={form.gpus}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        gpus: e.target.value,
+                                    })
+                                }
+                                placeholder="all o 4"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">Memoria</label>
+                            <input
+                                className="input"
+                                value={form.memory}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        memory: e.target.value,
+                                    })
+                                }
+                                placeholder="128g"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">SHM Size</label>
+                            <input
+                                className="input"
+                                value={form.shm_size}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        shm_size: e.target.value,
+                                    })
+                                }
+                                placeholder="45g"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">CPUs</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                className="input"
+                                value={form.cpus}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        cpus: e.target.value,
+                                    })
+                                }
+                                placeholder="8"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">PID Mode</label>
+                            <input
+                                className="input"
+                                value={form.pid_mode}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        pid_mode: e.target.value,
+                                    })
+                                }
+                                placeholder="host"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="label">Comando Override</label>
+                            <input
+                                className="input"
+                                value={form.command_override}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        command_override: e.target.value,
+                                    })
+                                }
+                                placeholder="bash -lc 'python app.py'"
+                                disabled={saving}
+                            />
+                        </div>
+                        <div className="form-group md:col-span-2">
+                            <label className="label">Volumenes</label>
+                            <input
+                                className="input"
+                                value={form.volumes}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        volumes: e.target.value,
+                                    })
+                                }
+                                placeholder="/media:/media:ro,/mnt:/mnt:ro,/home/$USERNAME:/home/$USERNAME"
+                                disabled={saving}
+                            />
+                            <p className="form-help">
+                                Soporta placeholders: $USERNAME, ${"{USERNAME}"}, {"{username}"}
+                            </p>
+                        </div>
+                        <label className="flex items-center gap-2 md:col-span-2">
+                            <input
+                                type="checkbox"
+                                checked={form.privileged}
+                                onChange={(e) =>
+                                    onChange({
+                                        ...form,
+                                        privileged: e.target.checked,
+                                    })
+                                }
+                                disabled={saving}
+                            />
+                            <span className="text-sm">Privileged</span>
+                        </label>
+
+                        <div className="modal-footer md:col-span-2">
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                disabled={saving}
+                                className={getButtonClass("secondary")}
+                            >
+                                Cerrar
+                            </button>
+                            <button
+                                type="submit"
+                                className={getButtonClass("primary")}
+                                disabled={saving}
+                            >
+                                {saving
+                                    ? "Guardando..."
+                                    : "Guardar defaults globales"}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
     );
 }
 

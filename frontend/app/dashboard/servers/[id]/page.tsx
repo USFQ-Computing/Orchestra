@@ -45,7 +45,7 @@ function buildRuntimePolicyPayload(form: {
     if (form.gpus.trim()) payload.gpus = form.gpus.trim();
     if (form.memory.trim()) payload.memory = form.memory.trim();
     if (form.shm_size.trim()) payload.shm_size = form.shm_size.trim();
-    if (form.pid_mode.trim()) payload.pid_mode = form.pid_mode.trim();
+    payload.pid_mode = form.pid_mode.trim();
     if (form.command_override.trim()) {
         payload.command_override = form.command_override.trim();
     }
@@ -55,7 +55,7 @@ function buildRuntimePolicyPayload(form: {
             payload.cpus = parsed;
         }
     }
-    if (form.privileged) payload.privileged = true;
+    payload.privileged = form.privileged;
 
     return payload;
 }
@@ -71,6 +71,10 @@ export default function ServerDetailPage() {
     const [error, setError] = useState("");
     const [wsConnected, setWsConnected] = useState(false);
     const [savingRuntime, setSavingRuntime] = useState(false);
+    const [runtimeFeedback, setRuntimeFeedback] = useState<{
+        type: "success" | "error";
+        message: string;
+    } | null>(null);
     const [runtimeForm, setRuntimeForm] = useState(
         normalizeRuntimePolicyForm(null),
     );
@@ -108,6 +112,7 @@ export default function ServerDetailPage() {
             ]);
             console.log("[ServerDetail] Server data loaded:", serverData);
             setServer(serverData);
+            setRuntimeFeedback(null);
             setRuntimeForm(
                 normalizeRuntimePolicyForm(
                     serverData.container_runtime_defaults,
@@ -198,6 +203,7 @@ export default function ServerDetailPage() {
         if (!server) return;
 
         setSavingRuntime(true);
+        setRuntimeFeedback(null);
         try {
             const payload = buildRuntimePolicyPayload(runtimeForm);
             await serversService.updateRuntimeDefaults(server.id, payload);
@@ -209,11 +215,21 @@ export default function ServerDetailPage() {
                 ),
             );
             setError("");
+            setRuntimeFeedback({
+                type: "success",
+                message: "Runtime guardado correctamente para este servidor.",
+            });
         } catch (err: any) {
-            setError(
+            const detail =
                 err.response?.data?.detail ||
-                    "Error al guardar configuración de runtime del servidor",
+                "Error al guardar configuración de runtime del servidor";
+            setError(
+                detail,
             );
+            setRuntimeFeedback({
+                type: "error",
+                message: detail,
+            });
         } finally {
             setSavingRuntime(false);
         }
@@ -444,6 +460,20 @@ export default function ServerDetailPage() {
                     <p className="text-sm text-muted mb-4">
                         Estas reglas tienen prioridad sobre las reglas por label.
                     </p>
+                    {runtimeFeedback && (
+                        <div
+                            className={cn(
+                                getAlertClass(
+                                    runtimeFeedback.type === "success"
+                                        ? "success"
+                                        : "error",
+                                ),
+                                "mb-4",
+                            )}
+                        >
+                            <span>{runtimeFeedback.message}</span>
+                        </div>
+                    )}
                     <form
                         onSubmit={handleSaveRuntimeDefaults}
                         className="grid grid-cols-1 md:grid-cols-2 gap-4"

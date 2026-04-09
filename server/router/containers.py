@@ -411,6 +411,7 @@ async def preview_container_command(
     """Preview the exact docker run command that would be used for container creation."""
     from ..CRUD.containers import (
         get_next_available_port,
+        resolve_runtime_volumes,
         resolve_effective_runtime_policy,
     )
 
@@ -421,6 +422,7 @@ async def preview_container_command(
         )
 
     target_user_id = user.id
+    target_username = user.username
     if container_data.user_id is not None:
         if not user.is_admin:
             raise HTTPException(
@@ -434,6 +436,7 @@ async def preview_container_command(
                 detail=f"User with id {container_data.user_id} not found",
             )
         target_user_id = container_data.user_id
+        target_username = target_user.username
 
     ports = container_data.ports
     if not ports:
@@ -441,12 +444,13 @@ async def preview_container_command(
         ports = f"{next_port}:8080"
 
     runtime_policy = resolve_effective_runtime_policy(db, server, target_user_id)
+    volumes = resolve_runtime_volumes(runtime_policy, target_username)
 
     command = build_docker_run_command(
         name=container_data.name,
         image=container_data.image,
         ports=ports,
-        restart_policy="unless-stopped",
+        volumes=volumes,
         gpus=runtime_policy.get("gpus"),
         memory=runtime_policy.get("memory"),
         shm_size=runtime_policy.get("shm_size"),
@@ -460,6 +464,7 @@ async def preview_container_command(
         "command": command,
         "effective_runtime_policy": runtime_policy,
         "resolved_ports": ports,
+        "resolved_volumes": volumes,
         "server": {
             "id": server.id,
             "name": server.name,

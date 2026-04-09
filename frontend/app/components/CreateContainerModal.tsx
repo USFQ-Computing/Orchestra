@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { cn, getButtonClass, getAlertClass, getInputClass } from "@/lib/styles";
 import { useToast } from "@/app/contexts/ToastContext";
 import { containersService } from "@/lib/services";
@@ -47,6 +47,8 @@ export default function CreateContainerModal({
     const [currentUser, setCurrentUser] = useState<any>(null);
     const [selectedUserId, setSelectedUserId] = useState<string>("");
     const [userSearch, setUserSearch] = useState<string>("");
+    const [highlightedUserIndex, setHighlightedUserIndex] = useState<number>(0);
+    const userOptionsListRef = useRef<HTMLDivElement | null>(null);
 
     // Valores por defecto para Colab Runtime
     const DEFAULT_IMAGE =
@@ -250,11 +252,59 @@ export default function CreateContainerModal({
         const userId = user.id.toString();
         setSelectedUserId(userId);
         setUserSearch(user.username);
+        setHighlightedUserIndex(0);
         setFormData((prev) => ({
             ...prev,
             user_id: userId,
             name: `colab_${user.username}`,
         }));
+    };
+
+    const handleUserSearchKeyDown = (
+        e: React.KeyboardEvent<HTMLInputElement>,
+        options: User[],
+    ) => {
+        if (e.key === "ArrowDown") {
+            if (options.length === 0) {
+                return;
+            }
+            e.preventDefault();
+            setHighlightedUserIndex((prev) =>
+                prev >= options.length - 1 ? 0 : prev + 1,
+            );
+            return;
+        }
+
+        if (e.key === "ArrowUp") {
+            if (options.length === 0) {
+                return;
+            }
+            e.preventDefault();
+            setHighlightedUserIndex((prev) =>
+                prev <= 0 ? options.length - 1 : prev - 1,
+            );
+            return;
+        }
+
+        if (e.key === "Escape") {
+            setHighlightedUserIndex(0);
+            return;
+        }
+
+        if (e.key !== "Enter") {
+            return;
+        }
+
+        // In the user search field, Enter should pick the highlighted suggestion.
+        e.preventDefault();
+
+        if (options.length > 0) {
+            const safeIndex = Math.min(
+                Math.max(highlightedUserIndex, 0),
+                options.length - 1,
+            );
+            handleSelectUser(options[safeIndex]);
+        }
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -349,6 +399,7 @@ export default function CreateContainerModal({
         setError("");
         setShowAdvanced(false);
         setUserSearch("");
+        setHighlightedUserIndex(0);
         setPreviewCommand("");
         setPreviewMeta(null);
 
@@ -372,8 +423,6 @@ export default function CreateContainerModal({
         }
     };
 
-    if (!isOpen) return null;
-
     const filteredUsers = users
         .filter((user) => {
             const query = userSearch.trim().toLowerCase();
@@ -391,6 +440,33 @@ export default function CreateContainerModal({
     const selectedUser = users.find(
         (u) => u.id.toString() === selectedUserId,
     );
+
+    useEffect(() => {
+        if (filteredUsers.length === 0) {
+            return;
+        }
+
+        if (highlightedUserIndex >= filteredUsers.length) {
+            setHighlightedUserIndex(0);
+        }
+    }, [filteredUsers.length, highlightedUserIndex]);
+
+    useEffect(() => {
+        const list = userOptionsListRef.current;
+        if (!list || filteredUsers.length === 0) {
+            return;
+        }
+
+        const target = list.querySelector(
+            `[data-user-option-index="${highlightedUserIndex}"]`,
+        ) as HTMLElement | null;
+
+        if (target) {
+            target.scrollIntoView({ block: "nearest" });
+        }
+    }, [highlightedUserIndex, filteredUsers.length]);
+
+    if (!isOpen) return null;
 
     return (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -445,12 +521,19 @@ export default function CreateContainerModal({
                                         onChange={(e) => {
                                             const value = e.target.value;
                                             setUserSearch(value);
+                                            setHighlightedUserIndex(0);
                                             setSelectedUserId("");
                                             setFormData((prev) => ({
                                                 ...prev,
                                                 user_id: "",
                                             }));
                                         }}
+                                        onKeyDown={(e) =>
+                                            handleUserSearchKeyDown(
+                                                e,
+                                                filteredUsers,
+                                            )
+                                        }
                                         placeholder="Buscar por usuario o email"
                                         className={getInputClass()}
                                         required
@@ -464,16 +547,29 @@ export default function CreateContainerModal({
                                     )}
 
                                     {!preselectedUserId && userSearch.trim() && (
-                                        <div className="mt-2 border border-gray-200 dark:border-gray-700 rounded-lg max-h-48 overflow-y-auto bg-white dark:bg-gray-900">
+                                        <div
+                                            ref={userOptionsListRef}
+                                            className="mt-2 border border-gray-200 dark:border-gray-700 rounded-lg max-h-48 overflow-y-auto bg-white dark:bg-gray-900"
+                                        >
                                             {filteredUsers.length > 0 ? (
-                                                filteredUsers.map((user) => (
+                                                filteredUsers.map((user, index) => (
                                                     <button
                                                         key={user.id}
+                                                        data-user-option-index={index}
                                                         type="button"
                                                         onClick={() =>
                                                             handleSelectUser(user)
                                                         }
-                                                        className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-b-0"
+                                                        onMouseEnter={() =>
+                                                            setHighlightedUserIndex(index)
+                                                        }
+                                                        className={cn(
+                                                            "w-full text-left px-3 py-2 border-b border-gray-100 dark:border-gray-800 last:border-b-0",
+                                                            index ===
+                                                                highlightedUserIndex
+                                                                ? "bg-blue-50 dark:bg-blue-900/30"
+                                                                : "hover:bg-gray-50 dark:hover:bg-gray-800",
+                                                        )}
                                                     >
                                                         <div className="text-sm font-medium text-gray-900 dark:text-white">
                                                             {user.username}

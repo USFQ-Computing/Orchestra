@@ -7,6 +7,7 @@ from ..CRUD.users import create_user, get_user_by_username
 # Import all models so SQLAlchemy registers them before create_all
 from ..models.models import (
     AnsibleTask,
+    AppSetting,
     Container,
     ExecutedPlaybook,
     Metric,
@@ -42,8 +43,21 @@ def ensure_schema_compatibility() -> None:
                 """
             )
         )
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    id SERIAL PRIMARY KEY,
+                    setting_key VARCHAR(100) UNIQUE NOT NULL,
+                    setting_value JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
         db.commit()
-        print("✓ Compatibilidad de esquema aplicada (runtime policies)")
+        print("✓ Compatibilidad de esquema aplicada (runtime policies + app settings)")
     except Exception as e:
         db.rollback()
         print(f"⚠ Error aplicando compatibilidad de esquema: {e}")
@@ -63,6 +77,7 @@ def reset_sequences() -> None:
             "ansible_tasks",
             "executed_playbooks",
             "containers",
+            "app_settings",
         ]
 
         for table in tables:

@@ -8,6 +8,7 @@ export interface ContainerRuntimePolicy {
     pid_mode?: string;
     privileged?: boolean;
     command_override?: string;
+    volumes?: string;
 }
 
 export interface ContainerCreateRequest {
@@ -39,6 +40,11 @@ export interface Server {
     ssh_status?: string; // pending, deployed, failed
     has_ssh_password?: boolean; // Indica si tiene contraseña SSH guardada
     container_runtime_defaults?: ContainerRuntimePolicy | null;
+}
+
+export interface GlobalRuntimeDefaultsResponse {
+    container_runtime_defaults: ContainerRuntimePolicy;
+    effective_container_runtime_defaults: ContainerRuntimePolicy;
 }
 
 export interface Metric {
@@ -144,6 +150,23 @@ export const serversService = {
         const response = await api.patch<Server>(`/servers/${id}`, {
             container_runtime_defaults: runtimeDefaults,
         });
+        return response.data;
+    },
+
+    async getGlobalRuntimeDefaults() {
+        const response = await api.get<GlobalRuntimeDefaultsResponse>(
+            "/servers/runtime-defaults/global",
+        );
+        return response.data;
+    },
+
+    async updateGlobalRuntimeDefaults(
+        runtimeDefaults: ContainerRuntimePolicy | null,
+    ) {
+        const response = await api.patch<GlobalRuntimeDefaultsResponse>(
+            "/servers/runtime-defaults/global",
+            { container_runtime_defaults: runtimeDefaults },
+        );
         return response.data;
     },
 
@@ -495,6 +518,14 @@ export const labelsService = {
     async getUserLabels(userId: number) {
         const response = await api.get<Label[]>(
             `/admin/labels/user/${userId}/labels`,
+        );
+        return response.data;
+    },
+
+    async getUsersLabelsMap(userIds: number[]) {
+        const response = await api.post<Record<number, Label[]>>(
+            "/admin/labels/users/labels-map",
+            userIds,
         );
         return response.data;
     },

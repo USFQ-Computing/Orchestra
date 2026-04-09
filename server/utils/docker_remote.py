@@ -51,7 +51,7 @@ def build_docker_run_command(
     ports: Optional[str] = None,
     env_vars: Optional[Dict[str, str]] = None,
     volumes: Optional[str] = None,
-    restart_policy: str = "unless-stopped",
+    restart_policy: Optional[str] = None,
     gpus: Optional[str] = None,
     memory: Optional[str] = None,
     shm_size: Optional[str] = None,
@@ -64,7 +64,8 @@ def build_docker_run_command(
     cmd_parts = ["docker", "run", "-d"]
 
     cmd_parts.extend(["--name", name])
-    cmd_parts.extend(["--restart", restart_policy])
+    if restart_policy:
+        cmd_parts.extend(["--restart", restart_policy])
 
     if gpus:
         cmd_parts.extend(["--gpus", gpus])
