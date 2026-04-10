@@ -59,6 +59,8 @@ if [ -z "$NEW_PASSWORD" ]; then
   exit 1
 fi
 
+export NEW_PASSWORD
+
 # Verificar si el usuario pertenece a la BD local.
 # Redirigir stdin de psql desde /dev/null para que no consuma el pipe de PAM.
 IS_DB_USER=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
@@ -94,6 +96,35 @@ fi
 
 # Usuario gestionado por BD: propagar al servidor central
 log "Password change detected for DB user: $USERNAME from host: $CLIENT_HOSTNAME"
+
+# Actualizar la BD local del cliente de inmediato para que el nuevo password
+# funcione en el siguiente login, incluso antes de que la sincronización remota
+# termine de propagarse.
+LOCAL_HASH=$(python3 - <<'PYTHON_EOF'
+import bcrypt
+import os
+
+password = os.environ.get("NEW_PASSWORD", "").encode("utf-8")
+print(bcrypt.hashpw(password, bcrypt.gensalt()).decode("utf-8"))
+PYTHON_EOF
+)
+
+if [ -z "$LOCAL_HASH" ]; then
+  log "ERROR: Failed to hash new password locally for user='${USERNAME}'"
+  exit 1
+fi
+
+LOCAL_UPDATE_RESULT=$(PGPASSWORD="${NSS_DB_PASSWORD}" psql \
+  -h "${DB_HOST}" \
+  -p "${DB_PORT}" \
+  -U "${NSS_DB_USER}" \
+  -d "${DB_NAME}" \
+  -v ON_ERROR_STOP=1 \
+  -t -A -c \
+  "UPDATE users SET password_hash = '${LOCAL_HASH}', must_change_password = FALSE, password_changed_at = NOW() WHERE username = '${USERNAME}' AND is_active = 1 RETURNING 1" \
+  < /dev/null 2>/dev/null || true)
+
+log "INFO: Local DB password update result for user='${USERNAME}' updated_row='${LOCAL_UPDATE_RESULT}'"
 
 REQUEST_URL="${SERVER_URL}/client-api/users/${USERNAME}/change-password"
 log "INFO: Sending password sync request url='${REQUEST_URL}' host='${CLIENT_HOSTNAME}' client_secret_set=$([ -n "$CLIENT_SECRET" ] && echo yes || echo no)"

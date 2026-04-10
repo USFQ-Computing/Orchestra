@@ -9,6 +9,8 @@ import { useAuth } from "@/app/contexts/AuthContext";
 export default function RegisterPage() {
     const router = useRouter();
     const { refreshUser } = useAuth();
+    const [showPassword, setShowPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [formData, setFormData] = useState({
         email: "",
         password: "",
@@ -165,23 +167,34 @@ export default function RegisterPage() {
                             <label htmlFor="password" className="label">
                                 Contraseña *
                             </label>
-                            <input
-                                id="password"
-                                type="password"
-                                value={formData.password}
-                                onChange={(e) =>
-                                    setFormData({
-                                        ...formData,
-                                        password: e.target.value,
-                                    })
-                                }
-                                className="input"
-                                placeholder="••••••••"
-                                required
-                                minLength={6}
-                                autoComplete="new-password"
-                                disabled={loading}
-                            />
+                            <div className="relative">
+                                <input
+                                    id="password"
+                                    type={showPassword ? "text" : "password"}
+                                    value={formData.password}
+                                    onChange={(e) =>
+                                        setFormData({
+                                            ...formData,
+                                            password: e.target.value,
+                                        })
+                                    }
+                                    className="input pr-24"
+                                    placeholder="••••••••"
+                                    required
+                                    minLength={6}
+                                    autoComplete="new-password"
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPassword((value) => !value)}
+                                    className="absolute inset-y-0 right-0 px-3 text-sm text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                                    aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                                    disabled={loading}
+                                >
+                                    {showPassword ? "Ocultar" : "Mostrar"}
+                                </button>
+                            </div>
                             <p className="text-xs text-muted mt-1">
                                 Mínimo 6 caracteres
                             </p>
@@ -191,23 +204,36 @@ export default function RegisterPage() {
                             <label htmlFor="confirmPassword" className="label">
                                 Confirmar Contraseña *
                             </label>
-                            <input
-                                id="confirmPassword"
-                                type="password"
-                                value={formData.confirmPassword}
-                                onChange={(e) =>
-                                    setFormData({
-                                        ...formData,
-                                        confirmPassword: e.target.value,
-                                    })
-                                }
-                                className="input"
-                                placeholder="••••••••"
-                                required
-                                minLength={6}
-                                autoComplete="new-password"
-                                disabled={loading}
-                            />
+                            <div className="relative">
+                                <input
+                                    id="confirmPassword"
+                                    type={showConfirmPassword ? "text" : "password"}
+                                    value={formData.confirmPassword}
+                                    onChange={(e) =>
+                                        setFormData({
+                                            ...formData,
+                                            confirmPassword: e.target.value,
+                                        })
+                                    }
+                                    className="input pr-24"
+                                    placeholder="••••••••"
+                                    required
+                                    minLength={6}
+                                    autoComplete="new-password"
+                                    disabled={loading}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setShowConfirmPassword((value) => !value)
+                                    }
+                                    className="absolute inset-y-0 right-0 px-3 text-sm text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white"
+                                    aria-label={showConfirmPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                                    disabled={loading}
+                                >
+                                    {showConfirmPassword ? "Ocultar" : "Mostrar"}
+                                </button>
+                            </div>
                         </div>
 
                         <button

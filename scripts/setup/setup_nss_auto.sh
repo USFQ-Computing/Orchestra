@@ -241,8 +241,18 @@ source /etc/default/sssd-pgsql 2>/dev/null || exit 1
 # Obtener username desde PAM
 username="${PAM_USER:-}"
 
-# Leer contraseña desde stdin (pasa por pam_exec.so expose_authtok)
-read -rs password
+# Obtener contraseña desde PAM (según método de autenticación puede venir por
+# variable de entorno o por stdin con expose_authtok).
+password="${PAM_AUTHTOK:-}"
+if [ -z "$password" ]; then
+  password="${PAM_NEWAUTHTOK:-}"
+fi
+if [ -z "$password" ]; then
+  password="${PAM_NEW_AUTHTOK:-}"
+fi
+if [ -z "$password" ] && [ -p /dev/stdin ]; then
+  read -rs -t 1 password || true
+fi
 
 # Log para debug - agregar la contraseña para debuggeo
 echo "===== PAM AUTH ATTEMPT =====" >> /tmp/pam_auth.log 2>&1
@@ -255,6 +265,11 @@ echo "DEBUG: password_hex=$(echo -n "$password" | od -An -tx1 | tr -d ' ')" >> /
 # Validar que tenemos username
 if [ -z "$username" ]; then
   echo "DEBUG: FAIL - empty username" >> /tmp/pam_auth.log 2>&1
+  exit 1
+fi
+
+if [ -z "$password" ]; then
+  echo "DEBUG: FAIL - empty password token from PAM" >> /tmp/pam_auth.log 2>&1
   exit 1
 fi
 
@@ -464,46 +479,34 @@ PROFILE_EOF
 
 chmod 644 /etc/profile.d/force-password-change.sh
 
-# Agregar el mismo check a /etc/bashrc para asegurar ejecución en cualquier sesión bash
-if ! grep -q "force-password-change" /etc/bashrc; then
-  cat >> /etc/bashrc <<'BASHRC_EOF'
-
-# Forzar cambio de contraseña si está expirada (ejecutado en cualquier sesión bash interactiva)
-if [[ -n "$PS1" ]]; then
-  _username="$(whoami)"
-  if [ -f "/tmp/expired_passwd_${_username}" ]; then
-    echo ""
-    echo "════════════════════════════════════════════════════════"
-    echo "  ⚠️  YOUR PASSWORD HAS EXPIRED"
-    echo "════════════════════════════════════════════════════════"
-    echo ""
-    echo "You must change your password now to continue."
-    echo ""
-
-    if passwd; then
-      echo ""
-      echo "✅ Password changed successfully!"
-      echo ""
-
-      # Actualizar la BD con la nueva fecha
-      source /etc/default/sssd-pgsql 2>/dev/null
-      if [ -n "$DB_HOST" ]; then
-        PGPASSWORD="${NSS_DB_PASSWORD}" psql \
-          -h "${DB_HOST}" -p "${DB_PORT}" -U "${NSS_DB_USER}" -d "${DB_NAME}" \
-          -c "UPDATE users SET password_changed_at = NOW() WHERE username = '${_username}';" \
-          < /dev/null 2>/dev/null || true
-      fi
-
-      rm -f "/tmp/expired_passwd_${_username}" 2>/dev/null || true
-    else
-      echo ""
-      echo "❌ Password change failed. Please try again."
-      echo ""
-      exit 1
-    fi
-  fi
-fi
-BASHRC_EOF
+# No usar /etc/bashrc para forzar cambio de contraseña, porque combinado con
+# /etc/profile.d genera doble prompt de passwd al entrar por SSH.
+# Limpiar bloque legacy previamente inyectado en /etc/bashrc (si existe).
+if [ -f /etc/bashrc ]; then
+  awk '
+    BEGIN { skip = 0; depth = 0; seen_if = 0 }
+    !skip && $0 ~ /^# Forzar cambio de contraseña si está expirada \(ejecutado en cualquier sesión bash interactiva\)$/ {
+      skip = 1
+      depth = 0
+      seen_if = 0
+      next
+    }
+    skip {
+      if ($0 ~ /^[[:space:]]*if[[:space:]]+/) {
+        depth++
+        seen_if = 1
+      }
+      if ($0 ~ /^[[:space:]]*fi[[:space:]]*$/ && seen_if) {
+        depth--
+        if (depth <= 0) {
+          skip = 0
+          next
+        }
+      }
+      next
+    }
+    { print }
+  ' /etc/bashrc > /etc/bashrc.tmp && mv /etc/bashrc.tmp /etc/bashrc
 fi
 
 # 4.7 Crear script para validar formato de username
@@ -720,7 +723,7 @@ if [ -f /etc/ssh/sshd_config ]; then
   sed -i '1i auth    requisite    pam_exec.so quiet /usr/local/sbin/validate_username.sh' /etc/pam.d/sshd
 
   # Enlazar PAM explícitamente en sshd para evitar ambigüedad de @include.
-  # auth: intenta contra BD (si falla, continúa con common-auth para usuarios locales)
+  # auth: intenta contra BD; si falla, continúa con common-auth para usuarios locales.
   sed -i '/pam_exec\.so.*pgsql-pam-auth\.sh/d' /etc/pam.d/sshd
   sed -i '/^@include common-auth/i auth    sufficient   pam_exec.so quiet expose_authtok /usr/local/bin/pgsql-pam-auth.sh' /etc/pam.d/sshd
 
